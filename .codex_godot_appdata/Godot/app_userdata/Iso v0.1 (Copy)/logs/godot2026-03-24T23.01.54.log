@@ -1,0 +1,91 @@
+Godot Engine v4.6.1.stable.official.14d19694e - https://godotengine.org
+
+ERROR: Failed to read the root certificate store.
+   at: get_system_ca_certificates (platform/windows/os_windows.cpp:2570)
+SCRIPT ERROR: Parse Error: Could not find type "WaterResolver" in the current scope.
+   at: GDScript::reload (res://scripts/world/world_generator.gd:32)
+SCRIPT ERROR: Compile Error: Failed to compile depended scripts.
+   at: GDScript::reload (res://scripts/world/chunk_manager.gd:0)
+SCRIPT ERROR: Compile Error: Failed to compile depended scripts.
+   at: GDScript::reload (res://scripts/main.gd:0)
+ERROR: Failed to load script "res://scripts/main.gd" with error "Compilation failed".
+   at: load (modules/gdscript/gdscript.cpp:2907)
+SCRIPT ERROR: Invalid access to property or key 'chunk_size' on a base object of type 'Nil'.
+   at: ChunkManager._cell_to_chunk (res://scripts/world/chunk_manager.gd:137)
+   GDScript backtrace (most recent call first):
+       [0] _cell_to_chunk (res://scripts/world/chunk_manager.gd:137)
+       [1] _get_camera_chunk (res://scripts/world/chunk_manager.gd:134)
+       [2] _update_streaming (res://scripts/world/chunk_manager.gd:125)
+       [3] _ready (res://scripts/world/chunk_manager.gd:51)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid call. Nonexistent function 'is_cell_walkable' in base 'Nil'.
+   at: ChunkManager.get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+   GDScript backtrace (most recent call first):
+       [0] get_random_walkable_cell_near (res://scripts/world/chunk_manager.gd:102)
+       [1] _spawn_initial_colonists (res://scripts/entities/colonist_manager.gd:18)
+SCRIPT ERROR: Invalid access to property or key 'chunk_size' on a base object of type 'Nil'.
+   at: ChunkManager._cell_to_chunk (res://scripts/world/chunk_manager.gd:137)
+   GDScript backtrace (most recent call first):
+       [0] _cell_to_chunk (res://scripts/world/chunk_manager.gd:137)
+       [1] _get_camera_chunk (res://scripts/world/chunk_manager.gd:134)
+       [2] _update_streaming (res://scripts/world/chunk_manager.gd:125)
+       [3] _process (res://scripts/world/chunk_manager.gd:54)
+SCRIPT ERROR: Invalid call. Nonexistent function 'generate_chunk' in base 'Nil'.
+   at: ChunkManager._generate_chunk (res://scripts/world/chunk_manager.gd:157)
+   GDScript backtrace (most recent call first):
+       [0] _generate_chunk (res://scripts/world/chunk_manager.gd:157)
+       [1] _process (res://scripts/world/chunk_manager.gd:58)

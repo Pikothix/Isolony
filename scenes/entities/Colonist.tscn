@@ -1,0 +1,43 @@
+[gd_scene format=3 uid="uid://b54qusyyws7f"]
+
+[ext_resource type="Script" uid="uid://lv4ggaybay0u" path="res://scripts/entities/colonist.gd" id="1_colonist_script"]
+[ext_resource type="Texture2D" uid="uid://ud8u8aaex3fs" path="res://assets/COLONIST.png" id="2_pu3hl"]
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_ga6jj"]
+atlas = ExtResource("2_pu3hl")
+
+[node name="Colonist" type="Node2D" unique_id=1931442806]
+script = ExtResource("1_colonist_script")
+
+[node name="SelectionIndicator" type="Polygon2D" parent="."]
+visible = false
+z_index = -1
+color = Color(1, 0.86, 0.2, 0.55)
+polygon = PackedVector2Array(-11, 0, 0, 6, 11, 0, 0, -6)
+
+[node name="Shadow" type="Polygon2D" parent="." unique_id=1279686085]
+color = Color(0, 0, 0, 0.18)
+polygon = PackedVector2Array(-7, 0, 0, 4, 7, 0, 0, -4)
+
+[node name="Body" type="Polygon2D" parent="." unique_id=628803203]
+color = Color(0.84, 0.82, 0.76, 1)
+polygon = PackedVector2Array(0, -16, 8, -8, 0, 0, -8, -8)
+
+[node name="CharacterBody2D" type="Sprite2D" parent="." unique_id=1312021872]
+position = Vector2(0, -8)
+scale = Vector2(0.53796166, 0.57169694)
+texture = SubResource("AtlasTexture_ga6jj")
+
+[node name="NeedsLabel" type="Label" parent="."]
+z_index = 20
+offset_left = -40.0
+offset_top = -35.0
+offset_right = 40.0
+offset_bottom = -23.0
+mouse_filter = 2
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.9)
+theme_override_constants/outline_size = 2
+theme_override_font_sizes/font_size = 8
+text = "R100 W100 S100 H100"
+horizontal_alignment = 1

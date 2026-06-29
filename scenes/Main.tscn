@@ -1,0 +1,251 @@
+[gd_scene format=3 uid="uid://bh8o8sua62k4c"]
+
+[ext_resource type="Script" uid="uid://cx52bqynigfgd" path="res://scripts/main.gd" id="1_main_script"]
+[ext_resource type="Script" uid="uid://dcad26lsf1qlo" path="res://scripts/world/world_generator.gd" id="2_world_generator_script"]
+[ext_resource type="Script" uid="uid://dr2g84fw3whao" path="res://scripts/world/chunk_manager.gd" id="3_chunk_manager_script"]
+[ext_resource type="Script" uid="uid://bhhch6tuypayv" path="res://scripts/entities/colonist_manager.gd" id="4_colonist_manager_script"]
+[ext_resource type="Script" uid="uid://tpqbjd1lraii" path="res://scripts/camera_controller.gd" id="5_camera_script"]
+[ext_resource type="TileSet" uid="uid://soeglgy3prj1" path="res://TerrainIso.tres" id="6_tileset"]
+[ext_resource type="PackedScene" uid="uid://b54qusyyws7f" path="res://scenes/entities/Colonist.tscn" id="7_colonist_scene"]
+[ext_resource type="Script" uid="uid://cabx2m5kqxwcm" path="res://scripts/ui/selected_tile_panel.gd" id="12_selected_tile_panel"]
+[ext_resource type="Script" path="res://scripts/ui/colonist_info_panel.gd" id="13_colonist_info_panel"]
+[ext_resource type="Script" path="res://scripts/ui/build_order_panel.gd" id="14_build_order_panel"]
+
+[node name="Main" type="Node2D" unique_id=1855439718]
+script = ExtResource("1_main_script")
+
+[node name="WorldGenerator" type="Node" parent="." unique_id=2120665111]
+script = ExtResource("2_world_generator_script")
+landmass_scale = 16.0
+water_max = 0.465
+
+[node name="ChunkManager" type="Node2D" parent="." unique_id=984802778]
+script = ExtResource("3_chunk_manager_script")
+procedural_tree_large_size = 72
+procedural_rock_small_size = 48
+procedural_rock_medium_size = 48
+procedural_rock_large_size = 48
+
+[node name="TerrainLayer" type="TileMapLayer" parent="ChunkManager" unique_id=2131718609]
+tile_set = ExtResource("6_tileset")
+
+[node name="GameplayYSort" type="Node2D" parent="ChunkManager" unique_id=2034294451]
+y_sort_enabled = true
+
+[node name="StockpileZoneRoot" type="Node2D" parent="ChunkManager/GameplayYSort"]
+
+[node name="GroundItemRoot" type="Node2D" parent="ChunkManager/GameplayYSort"]
+y_sort_enabled = true
+
+[node name="ResourceRoot" type="Node2D" parent="ChunkManager/GameplayYSort" unique_id=2034294452]
+y_sort_enabled = true
+
+[node name="ConstructionRoot" type="Node2D" parent="ChunkManager/GameplayYSort"]
+y_sort_enabled = true
+
+[node name="ColonistManager" type="Node2D" parent="ChunkManager/GameplayYSort" unique_id=470371596]
+y_sort_enabled = true
+script = ExtResource("4_colonist_manager_script")
+colonist_count = 12
+colonist_scene = ExtResource("7_colonist_scene")
+
+[node name="Camera2D" type="Camera2D" parent="." unique_id=2070964511]
+position = Vector2(0, -120)
+zoom = Vector2(1.1, 1.1)
+script = ExtResource("5_camera_script")
+max_zoom = 200.0
+
+[node name="CanvasLayer" type="CanvasLayer" parent="." unique_id=123191144]
+
+[node name="PanelContainer" type="PanelContainer" parent="CanvasLayer" unique_id=612678936]
+offset_left = 12.0
+offset_top = 12.0
+offset_right = 410.0
+offset_bottom = 176.0
+
+[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/PanelContainer" unique_id=301925900]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 8
+
+[node name="ResourceLabel" type="Label" parent="CanvasLayer/PanelContainer/MarginContainer" unique_id=837526972]
+layout_mode = 2
+text = "Wood: 0
+Stone: 0"
+
+[node name="SelectedTilePanel" type="PanelContainer" parent="CanvasLayer" unique_id=777112233]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -154.0
+offset_top = 12.0
+offset_right = -12.0
+offset_bottom = 118.0
+grow_horizontal = 0
+script = ExtResource("12_selected_tile_panel")
+
+[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/SelectedTilePanel" unique_id=777112234]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 8
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/SelectedTilePanel/MarginContainer" unique_id=777112235]
+layout_mode = 2
+
+[node name="TitleLabel" type="Label" parent="CanvasLayer/SelectedTilePanel/MarginContainer/VBoxContainer" unique_id=777112236]
+layout_mode = 2
+text = "Selected Tile"
+
+[node name="PreviewRect" type="TextureRect" parent="CanvasLayer/SelectedTilePanel/MarginContainer/VBoxContainer" unique_id=777112237]
+custom_minimum_size = Vector2(48, 32)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="NameLabel" type="Label" parent="CanvasLayer/SelectedTilePanel/MarginContainer/VBoxContainer" unique_id=777112238]
+layout_mode = 2
+text = "BLANK"
+
+[node name="BuildOrderPanel" type="PanelContainer" parent="CanvasLayer"]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -250.0
+offset_top = 130.0
+offset_right = -12.0
+offset_bottom = 434.0
+grow_horizontal = 0
+script = ExtResource("14_build_order_panel")
+
+[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/BuildOrderPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 8
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/BuildOrderPanel/MarginContainer"]
+layout_mode = 2
+theme_override_constants/separation = 5
+
+[node name="TitleLabel" type="Label" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Build & Orders"
+
+[node name="ModeLabel" type="Label" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Mode: Normal Selection"
+
+[node name="BuildLabel" type="Label" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Build"
+
+[node name="CampfireButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="CabinButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="StorehouseButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="OrdersLabel" type="Label" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Orders"
+
+[node name="HarvestButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Harvest Designation  [H]"
+
+[node name="StockpileButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Stockpile Zone  [Z]"
+
+[node name="CancelButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+disabled = true
+text = "Cancel Mode  [Esc / Right-click]"
+
+[node name="HintLabel" type="Label" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "C: complete site   X: cancel site"
+autowrap_mode = 2
+
+[node name="ColonistInfoPanel" type="PanelContainer" parent="CanvasLayer"]
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_top = -620.0
+offset_right = 310.0
+offset_bottom = -12.0
+grow_vertical = 0
+script = ExtResource("13_colonist_info_panel")
+
+[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/ColonistInfoPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 8
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/ColonistInfoPanel/MarginContainer"]
+layout_mode = 2
+
+[node name="NameLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "First Last"
+
+[node name="NicknameLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Nickname: Example"
+
+[node name="ActivityLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Activity: Idle"
+
+[node name="NeedsLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Rest: 100\nWarmth: 100\nShelter: 100\nHunger: 100"
+
+[node name="RelationshipsLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Relationships:\nPartner: Jane Smith"
+autowrap_mode = 2
+
+[node name="TraitsLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Traits: Hard Worker, Kind"
+autowrap_mode = 2
+
+[node name="WorkPrioritiesLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Work Priorities (1 highest, - disabled):\nConstruct 2    Harvest 2\nHaul -    Mine -\nFarm -    Cook -\nCraft -    Doctor -\nResearch -    Guard -"
+
+[node name="WorkPriorityButtons" type="HBoxContainer" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+
+[node name="ConstructPriorityButton" type="Button" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/WorkPriorityButtons"]
+layout_mode = 2
+text = "Construct: 2"
+tooltip_text = "Cycle Construct priority: disabled, 1 (highest), 2, 3, 4"
+
+[node name="HarvestPriorityButton" type="Button" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/WorkPriorityButtons"]
+layout_mode = 2
+text = "Harvest: 2"
+tooltip_text = "Cycle Harvest priority: disabled, 1 (highest), 2, 3, 4"
+
+[node name="HaulPriorityButton" type="Button" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/WorkPriorityButtons"]
+layout_mode = 2
+text = "Haul: -"
+tooltip_text = "Cycle Haul priority: disabled, 1 (highest), 2, 3, 4"
+
+[node name="SkillsLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Skills:\nConstruction 8 ++\nMining 3\nPlants 6 +\nCooking 2\nCrafting 4\nAnimals 1\nMedicine 5\nResearch 7\nShooting 3\nMelee 2\nSocial 4"

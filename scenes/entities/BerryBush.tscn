@@ -1,0 +1,34 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/entities/resource_node.gd" id="1_resource_script"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_berry_bush"]
+radius = 10.0
+
+[node name="BerryBush" type="Area2D"]
+script = ExtResource("1_resource_script")
+resource_type = "food"
+yield_amount = 6
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+position = Vector2(0, -5)
+shape = SubResource("CircleShape2D_berry_bush")
+
+[node name="Bush" type="Polygon2D" parent="."]
+color = Color(0.16, 0.48, 0.2, 1)
+polygon = PackedVector2Array(-13, 1, -10, -9, -4, -13, 1, -10, 7, -13, 13, -6, 11, 2, 4, 6, -6, 6)
+
+[node name="BerryLeft" type="Polygon2D" parent="."]
+position = Vector2(-6, -6)
+color = Color(0.65, 0.08, 0.25, 1)
+polygon = PackedVector2Array(-2, 0, 0, -2, 2, 0, 0, 2)
+
+[node name="BerryCenter" type="Polygon2D" parent="."]
+position = Vector2(0, -9)
+color = Color(0.78, 0.1, 0.3, 1)
+polygon = PackedVector2Array(-2, 0, 0, -2, 2, 0, 0, 2)
+
+[node name="BerryRight" type="Polygon2D" parent="."]
+position = Vector2(7, -5)
+color = Color(0.65, 0.08, 0.25, 1)
+polygon = PackedVector2Array(-2, 0, 0, -2, 2, 0, 0, 2)

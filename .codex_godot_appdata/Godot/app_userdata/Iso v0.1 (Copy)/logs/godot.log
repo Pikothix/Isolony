@@ -1,0 +1,12 @@
+Godot Engine v4.6.1.stable.official.14d19694e - https://godotengine.org
+
+macro_scale=1.0 biome_scale=1.0
+region_freq=0.00139999995008 height_freq=0.01499999966472 moisture_freq=0.01700000092387 temp_freq=0.00999999977648 detail_freq=0.02999999932945
+macro_scale=2.0 biome_scale=2.0
+region_freq=0.00069999997504 height_freq=0.00749999983236 moisture_freq=0.00850000046194 temp_freq=0.00499999988824 detail_freq=0.02999999932945
+ERROR: Failed to read the root certificate store.
+   at: get_system_ca_certificates (platform/windows/os_windows.cpp:2570)
+WARNING: ObjectDB instances leaked at exit (run with --verbose for details).
+   at: cleanup (core/object/object.cpp:2641)
+ERROR: 5 resources still in use at exit (run with --verbose for details).
+   at: clear (core/io/resource.cpp:810)

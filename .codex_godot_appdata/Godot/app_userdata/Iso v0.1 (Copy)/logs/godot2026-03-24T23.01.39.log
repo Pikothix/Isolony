@@ -1,0 +1,93 @@
+Godot Engine v4.6.1.stable.official.14d19694e - https://godotengine.org
+
+Sample window: [-2048, 2048) step=8 total_cells=262144
+
+Live inland decision path:
+1. Ocean if height < water_max (0.24)
+2. Highlands if height >= upland_min (0.72)
+3. Coast band if height < coast_max (0.34), with swamp only when allowed and moisture >= saturated_min + region swamp bias and temperature >= cold_max (0.3)
+4. Inland only after those landform checks.
+   oceanic: dry<=0.25, wet>=0.72, swamp moisture>=0.799, allowed=["OCEAN", "COAST", "SWAMP", "FOREST", "GRASSLAND"]
+   temperate: dry<=0.249, wet>=0.75, swamp moisture>=0.823, allowed=["GRASSLAND", "FOREST", "COAST", "HIGHLANDS", "SWAMP"]
+   highland: dry<=0.25, wet>=0.77, swamp moisture>=0.8, allowed=["HIGHLANDS", "FOREST", "GRASSLAND", "COAST"]
+   arid: dry<=0.33, wet>=0.8, swamp moisture>=0.8, allowed=["ARID_BADLANDS", "GRASSLAND", "HIGHLANDS", "COAST"]
+
+=== Region oceanic ===
+cells=18990 avg_height=0.32111842828089 avg_moisture=0.62271085152788 avg_temperature=0.23622103344062
+Final biome composition:
+  OCEAN 33.91% (6440)
+  COAST 19.53% (3708)
+  SWAMP  1.06% (202)
+  GRASSLAND 31.40% (5962)
+  FOREST 13.95% (2650)
+  ARID_BADLANDS  0.00% (0)
+  HIGHLANDS  0.15% (28)
+Inland biome composition:
+  GRASSLAND 69.23% (5962)
+  FOREST 30.77% (2650)
+  ARID_BADLANDS  0.00% (0)
+Fallback grassland among inland cells: 69.23% (5962)
+Dry-threshold inland hits:  0.42% Wet-threshold inland hits: 30.77%
+
+=== Region temperate ===
+cells=110457 avg_height=0.50040314761279 avg_moisture=0.48921214800639 avg_temperature=0.24795710090846
+Final biome composition:
+  OCEAN  5.99% (6616)
+  COAST 13.22% (14599)
+  SWAMP  0.05% (52)
+  GRASSLAND 66.03% (72935)
+  FOREST  4.19% (4630)
+  ARID_BADLANDS  0.00% (0)
+  HIGHLANDS 10.52% (11625)
+Inland biome composition:
+  GRASSLAND 94.03% (72935)
+  FOREST  5.97% (4630)
+  ARID_BADLANDS  0.00% (0)
+Fallback grassland among inland cells: 94.03% (72935)
+Dry-threshold inland hits:  7.98% Wet-threshold inland hits:  5.97%
+
+=== Region highland ===
+cells=112806 avg_height=0.63904688943982 avg_moisture=0.47037128562542 avg_temperature=0.1631279789921
+Final biome composition:
+  OCEAN  0.09% (101)
+  COAST  2.82% (3186)
+  SWAMP  0.00% (0)
+  GRASSLAND 61.47% (69343)
+  FOREST  1.79% (2020)
+  ARID_BADLANDS  0.00% (0)
+  HIGHLANDS 33.82% (38156)
+Inland biome composition:
+  GRASSLAND 97.17% (69343)
+  FOREST  2.83% (2020)
+  ARID_BADLANDS  0.00% (0)
+Fallback grassland among inland cells: 97.17% (69343)
+Dry-threshold inland hits: 10.56% Wet-threshold inland hits:  2.83%
+
+=== Region arid ===
+cells=19891 avg_height=0.53193304468291 avg_moisture=0.30145956064179 avg_temperature=0.42418226242316
+Final biome composition:
+  OCEAN  3.58% (713)
+  COAST 10.81% (2151)
+  SWAMP  0.00% (0)
+  GRASSLAND 31.10% (6187)
+  FOREST  0.00% (0)
+  ARID_BADLANDS 39.39% (7835)
+  HIGHLANDS 15.11% (3005)
+Inland biome composition:
+  GRASSLAND 44.12% (6187)
+  FOREST  0.00% (0)
+  ARID_BADLANDS 55.88% (7835)
+Fallback grassland among inland cells: 44.12% (6187)
+Dry-threshold inland hits: 55.88% Wet-threshold inland hits:  0.00%
+
+=== Arid Focus ===
+Arid total grassland share: 31.10%
+Arid inland grassland share: 44.12%
+Arid inland arid_badlands share: 55.88%
+Arid fallback grassland share: 44.12%
+ERROR: Failed to read the root certificate store.
+   at: get_system_ca_certificates (platform/windows/os_windows.cpp:2570)
+WARNING: ObjectDB instances leaked at exit (run with --verbose for details).
+   at: cleanup (core/object/object.cpp:2641)
+ERROR: 4 resources still in use at exit (run with --verbose for details).
+   at: clear (core/io/resource.cpp:810)
