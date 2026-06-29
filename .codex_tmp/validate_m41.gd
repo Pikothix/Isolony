@@ -1,6 +1,7 @@
 extends SceneTree
 
 const SaveGameServiceRef = preload("res://scripts/simulation/save_game_service.gd")
+const ReachabilityQueryRef = preload("res://scripts/world/reachability_query.gd")
 
 var _main: Node
 var _world_state: Node
@@ -25,14 +26,21 @@ func _is_valid_zone_cell(cell: Vector2i) -> bool:
 		return false
 	var tile: Dictionary = _chunk_manager.get_effective_tile_info(cell)
 	var terrain: String = String(tile.get("terrain", ""))
-	return bool(tile.get("walkable", false)) and terrain != "WATER" and terrain != "ROCK_WALL" and not bool(tile.get("mineable", false)) and _world_state.get_construction_site_at_cell(cell).is_empty()
+	return bool(tile.get("walkable", false)) and terrain != "WATER" and terrain != "ROCK_WALL" and not bool(tile.get("mineable", false)) and _world_state.get_construction_site_at_cell(cell).is_empty() and not _chunk_manager.is_cell_blocked_by_resource(cell)
 
-func _find_valid_cell(origin: Vector2i, excluded: Array[Vector2i] = []) -> Vector2i:
+func _find_valid_cell(origin: Vector2i, excluded: Array[Vector2i] = [], required_origins: Array[Vector2i] = []) -> Vector2i:
 	for radius in range(64):
 		for y in range(-radius, radius + 1):
 			for x in range(-radius, radius + 1):
 				var cell := origin + Vector2i(x, y)
-				if cell not in excluded and _is_valid_zone_cell(cell) and not _world_state.is_cell_in_stockpile_zone(cell):
+				if cell in excluded or not _is_valid_zone_cell(cell) or _world_state.is_cell_in_stockpile_zone(cell):
+					continue
+				var reachable := true
+				for required_origin: Vector2i in required_origins:
+					if not bool(ReachabilityQueryRef.find_path(_chunk_manager, _world_state, required_origin, cell).get("reachable", false)):
+						reachable = false
+						break
+				if reachable:
 					return cell
 	return Vector2i(2147483647, 2147483647)
 
@@ -92,8 +100,8 @@ func _run() -> void:
 		return
 	_world_state.get_time_state().import_state({"current_day": 1, "current_minutes": 600.0, "paused": true})
 
-	var zone_cell: Vector2i = _find_valid_cell(worker.current_cell + Vector2i(8, 0))
-	var item_cell: Vector2i = _find_valid_cell(worker.current_cell + Vector2i(-8, 0), [zone_cell])
+	var zone_cell: Vector2i = _find_valid_cell(worker.current_cell + Vector2i(8, 0), [], [worker.current_cell])
+	var item_cell: Vector2i = _find_valid_cell(worker.current_cell + Vector2i(-8, 0), [zone_cell], [worker.current_cell, zone_cell])
 	if not _assert(zone_cell.x != 2147483647 and item_cell.x != 2147483647, "could not find zone/item cells"):
 		return
 	var zone_result: Dictionary = _world_state.request_create_stockpile_zone([zone_cell])
@@ -144,7 +152,10 @@ func _run() -> void:
 	if not _assert(bool(campfire_place.get("ok", false)) and bool(campfire_progress.get("completed", false)) and _world_state.get_resource_total("wood") == 95, "construction did not consume existing stockpile Wood"):
 		return
 
-	var abandon_item: Dictionary = _world_state.create_ground_item("stone", 2, item_cell + Vector2i(1, 0))
+	var abandon_cell: Vector2i = _find_valid_cell(item_cell + Vector2i(1, 0), [zone_cell, item_cell], [worker.current_cell, zone_cell])
+	if not _assert(abandon_cell.x != 2147483647, "could not find reachable abandonment item cell"):
+		return
+	var abandon_item: Dictionary = _world_state.create_ground_item("stone", 2, abandon_cell)
 	var abandon_id: String = String(abandon_item.get("item_id", ""))
 	_prepare_worker(worker)
 	if not _assert(worker._try_start_prioritized_work(), "could not start pre-pickup abandonment haul"):

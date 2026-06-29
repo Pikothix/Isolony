@@ -2,7 +2,7 @@
 
 This document defines the save/load boundary. It separates authoritative simulation state from generated, visual, UI, cache, and temporary runtime state.
 
-A minimal, non-autoload save/load foundation exists in `scripts/simulation/save_game_service.gd`. It serializes a versioned dictionary/JSON file and delegates import/export to current state owners. It does not provide menus, slots, autosave, full scene reload, migration, or persistence for future systems.
+A minimal, non-autoload save/load foundation exists in `scripts/simulation/save_game_service.gd`. It serializes a versioned dictionary/JSON file and delegates import/export to current state owners. It currently has no production UI or gameplay caller and is instantiated by debug or validation code. It does not provide menus, slots, autosave, full scene reload, migration, or persistence for future systems.
 
 ## Purpose
 
@@ -48,14 +48,16 @@ This boundary exists so future Codex tasks do not accidentally persist rendered 
   - skill level/XP/passion records
   - trait ids, with definitions re-derived from the registry
   - relationship type and stable target colonist id
-- Buildings and construction state when implemented:
+- Implemented buildings and construction state:
   - building id/type
   - occupied cells
-  - construction progress
-  - ownership/contents only when those systems exist
-- `TimeState` simulation time:
-  - current tick/day/time
-  - deterministic scheduler state if future systems depend on it
+  - required and consumed resources
+  - construction progress, build time, completion, and whether resources were consumed
+  - worker reservations remain transient and are excluded
+- `TimeState` clock state:
+  - current day and minutes
+  - day length, clock scale, and clock pause state
+  - pause/scale currently affect clock advancement only, not all colonist simulation
 
 ## State Not To Save
 
@@ -75,7 +77,7 @@ This boundary exists so future Codex tasks do not accidentally persist rendered 
 - Building/resource visual profile ids, scene/icon paths, placeholder palettes, scene-local sprites, and external visual instances. These come from presentation definitions documented in `docs/ASSET_REPLACEMENT.md`.
 - Building effect radii/tags and glow/warmth projection nodes; these derive from definitions plus completed building records.
 - Shared storage capacity; base capacity is code-backed and Storehouse bonuses derive from completed construction records plus `BuildingDefinition`.
-- Colonist activity, construction/harvest/haul assignment, carried payload, work/capacity reservation, movement target, pause timer, environmental status flags, and overhead need labels.
+- Colonist activity, construction/harvest/haul assignment, carried payload, work/capacity reservation, movement target, transient cell path/path index, pause timer, environmental status flags, and overhead need labels.
 - Selected colonist references, selection markers, and colonist info panel contents.
 - Stockpile/harvest drag start/current cells, mode flags, preview polygons, result summaries, and `StockpileZoneVisual` nodes.
 - `GroundItemVisual` nodes, labels, colors, and other reconstructible item presentation.
@@ -93,11 +95,13 @@ Examples:
 
 Do not serialize every loaded tile or every currently visible resource node. Those are runtime projections of seed/config plus deltas.
 
+Reconstruction also depends on the current code-backed generation algorithm and definitions. Terrain ids, resource-kind ids, spawn densities, noise/classification constants, resource yields, and building/trait definitions are not independently versioned inside the current save document. A version-2 document therefore assumes compatible project code in addition to matching the top-level integer version.
+
 ## Current Implementation
 
 Version `2` save data currently includes:
 
-- `world`: `WorldGenerator.seed` plus generation-affecting exported config values.
+- `world`: `WorldGenerator.seed` plus generation-affecting exported config values. `generation_config.chunk_size` is exported, but `WorldGenerator.import_generation_state()` does not read or validate it; runtime generation continues to use the code constant `WorldGenerator.CHUNK_SIZE`.
 - `time`: `TimeState` day, minutes, day length, time scale, and paused flag.
 - `stockpile`: abstract stored `ResourceStockpile` totals by resource type. Harvested output remains outside these totals as ground items.
 - `deltas.manual_tiles`: manual terrain overrides as cell coordinates plus terrain names.
@@ -106,27 +110,31 @@ Version `2` save data currently includes:
 - `deltas.harvest_orders`: active `WorldState` harvest intent containing order/resource ids, resource type, yield, and cell. Worker reservation is excluded.
 - `deltas.stockpile_zones`: authoritative `WorldState` zone records containing zone id, explicit cells, enabled state, and label.
 - `deltas.ground_items`: authoritative `WorldState` physical-item records containing item id, resource type, amount, cell, and enabled state.
-- `colonists`: authoritative identity, position, Rest/Warmth/Shelter/Hunger, skills, trait ids, and relationship target ids.
+- `colonists`: authoritative identity, position, Rest/Warmth/Shelter/Hunger, skills, trait ids, relationship target ids, and work priorities.
 
 Loading validates version `2`, applies world generator seed/config, imports `WorldState` time/stockpile/construction/harvest-order/stockpile-zone/ground-item state, imports `ChunkManager` world deltas, discards orders whose resource id is depleted, then asks `ColonistManager` to replace the population. Rendered cells/nodes, item visuals, designation markers, zone overlays, and placement previews remain excluded.
 
-Build/order panel state is also excluded. Normal/Build/Harvest/Stockpile mode, selected building button, area/placement previews, result summaries, Cancel-button state, mode labels, and keyboard/UI focus are transient presentation/control state owned by `Main` and reconstructed from runtime input rather than save data.
+Bottom-toolbar and Architect-menu state is also excluded. Normal/Build/Harvest/Stockpile mode, Architect open/closed state, selected tab/building button, generated button nodes, area/placement previews, result summaries, Cancel-button state, mode labels, and keyboard/UI focus are transient presentation/control state owned by `Main` or projected by `BottomToolbar` and reconstructed from runtime input rather than save data.
 
 `Colonist.export_state()` stores relationship target ids without cached display names. After every colonist is recreated, `ColonistManager` resolves names from restored ids; missing targets are skipped. Imported colonists resume idle at their saved positions and rediscover needs/work through existing runtime behavior.
 
-Per-colonist work priorities are authoritative colonist record data and are saved as the complete work-type/value dictionary. Values normalize to `0` through `4`; records without this additive field receive the current defaults (Construct/Harvest `2`, future work types disabled). This remains compatible with save version `2` and does not require a version increment.
+Per-colonist work priorities are authoritative colonist record data and are saved as the complete work-type/value dictionary. Values normalize to `0` through `4`; records without this additive field receive the current defaults (Construct/Harvest `2`, future work types disabled). The current loader treats this as compatible version-2 data because the field has a default. There is no schema-minor or capability marker, so further additive changes must be checked for semantic as well as structural compatibility before retaining version `2`.
 
 Hunger remains inside the version-2 colonist `needs` dictionary. Eating spends the already-persistent `food` stockpile total, so no schema change is required. Eating state/timers are not exported; imports resume idle and may decide to eat again from restored Hunger and Food values.
 
-Version `1` saves are rejected as unsupported. There is no migration layer; version `2` is the deliberate schema boundary introduced by Milestone 27.
+Version `1` saves are rejected as unsupported. Version `2` is the only accepted schema and there is no migration layer or schema-minor marker.
 
-Live load is intentionally limited. Applying a different seed/config rebuilds generator noise for future generation, but already-loaded chunks are not fully regenerated in-place. Manual overrides are reapplied to loaded chunk visuals, and loaded depleted resources are removed when their ids match the imported depletion set.
+Live load is intentionally limited. Applying a different seed/config rebuilds generator noise for future generation, but already-loaded chunks are not fully regenerated in-place. Until those chunks unload and regenerate, a running scene can contain loaded base terrain/resources from the previous generation settings alongside future chunks generated from the imported settings. Manual overrides are reapplied to loaded chunk visuals, and loaded depleted resources are removed when their ids match the imported depletion set.
+
+Load application is ordered but not transactional. `SaveGameService.apply_save_data()` imports generator state, then `WorldState`, then `ChunkManager` deltas, then colonists. Each owner mutates its live state during import. If a later import rejects its data, earlier generator, time, stockpile, construction, order, zone, item, or delta state may already have been replaced; the service does not roll those mutations back.
+
+Current import validation is a trusted-data boundary rather than complete hostile/corrupt-document validation. Colonist records store both `cell` and exact `world_position`, and import accepts both independently. Malformed same-version data can therefore restore values that disagree until runtime position-to-cell updates reconcile the live cell. Construction and generation imports also validate selected fields rather than staging a complete immutable candidate state. A production load path must not assume that a matching version alone guarantees a coherent document.
 
 During normal streaming, manual tile overrides and depleted resource ids are stored outside loaded chunk dictionaries. Unloading a chunk clears rendered cells and visible nodes, but does not clear those deltas. When the chunk streams back in, base terrain/resources are regenerated from seed/config and player deltas are applied on top.
 
-Stockpile-zone records are owned by `WorldState`, independently of loaded chunks. `ChunkManager` deletes only their per-cell overlay nodes on unload and recreates enabled zone cells from authoritative records when chunks load or zones are replaced. Missing `deltas.stockpile_zones` defaults to an empty list for older version-2 saves, so this additive field does not increment the save version.
+Stockpile-zone records are owned by `WorldState`, independently of loaded chunks. `ChunkManager` deletes only their per-cell overlay nodes on unload and recreates enabled zone cells from authoritative records when chunks load or zones are replaced. Missing `deltas.stockpile_zones` defaults to an empty list for older version-2 saves, so the current loader accepts this additive field without a version increment.
 
-Ground-item records are also owned by `WorldState`, independently of chunk streaming. Chunk unload removes only item visuals; generation and ground-item replacement signals recreate enabled projections for loaded cells. Missing `deltas.ground_items` defaults to an empty list for older version-2 saves, so save version `2` remains additive-compatible.
+Ground-item records are also owned by `WorldState`, independently of chunk streaming. Chunk unload removes only item visuals; generation and ground-item replacement signals recreate enabled projections for loaded cells. Missing `deltas.ground_items` defaults to an empty list for older version-2 saves, so the current loader accepts this additive field under version `2`.
 
 Haul reservations, destination assignments, storage-capacity earmarks, carried payload state, and hauling activities are transient and are not serialized as such. `export_ground_items()` includes an in-flight carried payload as its original item id at the pickup cell; loading therefore abandons the carry and restores a ground item instead of losing the resource. Unpicked reserved items remain ordinary ground-item records. WorldState/ResourceStockpile imports clear haul and capacity reservations, and colonists resume idle.
 
@@ -138,20 +146,23 @@ Completed-building effect state is not serialized separately. Campfire light/war
 
 Storehouse capacity is also not serialized separately. `ResourceStockpile` provides base capacity 100, while `WorldState` adds `storage_capacity` metadata from saved completed Storehouse records after construction import. Saved stockpile totals import unchanged even if they exceed the re-derived limit; new additions are rejected until capacity is available.
 
-Construction resource earmarks, harvest/haul workers, haul storage-capacity reservations, carried-item state, and transient job candidates are deliberately excluded from version `2` saves. Harvest creates no capacity reservation; Haul creates one transient reservation per claimed item. `ResourceStockpile.import_state()` clears reservations, WorldState restores orders/items without workers, and `Colonist.import_state()` resets all work/movement targets to idle. Restored colonists rediscover work. None of these paths refund resources already consumed into saved construction progress.
+Construction resource earmarks, harvest/haul workers, haul storage-capacity reservations, carried-item state, transient job candidates, and colonist cell paths/path indices are deliberately excluded from version `2` saves. Harvest creates no capacity reservation; Haul creates one transient reservation per claimed item. `ResourceStockpile.import_state()` clears reservations, WorldState restores orders/items without workers, and `Colonist.import_state()` resets all work/movement targets and path state to idle. Restored colonists rediscover work and recompute reachability from the loaded world. None of these paths refund resources already consumed into saved construction progress.
 
 The selected panel's current focus, button focus/hover state, and formatted priority text are UI-only and are not saved. Only the values owned by each `Colonist` persist.
 
-Harvest completion is saved through its authoritative results: the stable resource id enters `deltas.depleted_resources`, the new item enters `deltas.ground_items`, the completed order is absent, and stored totals remain unchanged. Incomplete orders persist as intent and restore without workers. Version `2` remains unchanged because both additive arrays default empty for older version-2 documents.
+Harvest completion is saved through its authoritative results: the stable resource id enters `deltas.depleted_resources`, the new item enters `deltas.ground_items`, the completed order is absent, and stored totals remain unchanged. Incomplete orders persist as intent and restore without workers. The current loader accepts these arrays as additive version-2 fields because missing arrays default empty; there is no schema-minor marker recording their presence.
 
 ## Remaining Blockers And Risks
 
 - Stable resource depletion identities need review. Current ids are derived from resource scene key and cell, which is adequate for the current one-resource-per-cell model but may not survive future multi-resource cells or resource regeneration rules.
+- Generation compatibility is represented only by save version `2` and the exported generator values. Noise/classification algorithms, frequency and resource-density constants, terrain/resource ids, yields, and code-backed definitions can change without a distinct generation/content version.
+- `generation_config.chunk_size` is written but ignored during import, so it does not protect a save from a changed runtime chunk-size constant.
 - Manual tile overrides persist through the minimal save foundation, but still live in `ChunkManager` rather than a broader world-delta owner.
 - `WorldState` owns `ResourceStockpile`, `TimeState`, construction sites, harvest orders, stockpile zones, and ground items, while `ColonistManager`/`Colonist` own persistent colonist records; terrain/resource deltas and chunks remain outside both.
 - Colonist records persist directly through scene-node owners rather than a separate data-model class. Off-map colonists or death/recruitment may eventually require separation.
 - `Colonist` has a minimal transient selector for construction/harvest/haul candidates, while `WorldState` retains focused authoritative transactions. Basic one-item hauling exists, but there is no shared job board, inventory UI, filtering, partial stack handling, or delivery planning.
-- Save schema versioning exists only as a single integer version check; no migration policy exists yet.
+- Save schema versioning exists only as a single integer version check; there is no schema-minor marker or migration policy. Additive defaulted fields are currently accepted under version `2`, but semantic compatibility is not independently recorded.
+- Applying a save mutates owners incrementally and cannot roll back a later failure. Seed/config changes also do not rebuild loaded chunks in place.
 
 ## Suggested Future Format
 
@@ -182,12 +193,15 @@ High-level shape:
 
 Keep generated data out of the save. Include enough schema/version information to reject incompatible saves clearly.
 
+This example describes the current shape; it is not a promise that all version-2 documents from different code revisions are semantically compatible.
+
 ## Near-Term Sequencing
 
 Recommended order:
 
 1. Keep persistence calls behind `SaveGameService`; do not make it an autoload without an explicit architecture decision.
-2. Add a deliberate reload/rebuild flow before treating seed/config changes as fully live-loadable.
-3. Decide whether resource ids are stable enough for long-term depletion saves.
-4. Move world deltas under `WorldState` or an equivalent simulation root when broader persistence needs it.
-5. Add a migration policy before compatibility with version `1` or any future schema is required.
+2. Stage and validate the complete document before mutating live owners in any future user-facing load path.
+3. Add a deliberate reload/rebuild flow before treating seed/config changes as fully live-loadable.
+4. Decide whether resource ids are stable enough for long-term depletion saves.
+5. Move world deltas under `WorldState` or an equivalent simulation root when broader persistence needs it.
+6. Add generation/content compatibility and a migration policy before compatibility across future code/schema revisions is required.

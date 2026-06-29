@@ -1,14 +1,13 @@
 extends Node2D
 
 ## Purpose: Coordinate the playable scene, transient control tools, and requests into simulation authorities.
-## Responsibility: Own Build/Harvest input and previews, including harvest drag state; never own construction or harvest records.
+## Responsibility: Own Build/Harvest/Stockpile control modes and previews; toolbar UI emits requests and never owns simulation records.
 ## Assumption: Area designation considers only currently loaded resources and every mutation is validated by WorldState.
 
 const TerrainConfigRef = preload("res://scripts/world/terrain_config.gd")
 const WorldStateScript = preload("res://scripts/simulation/world_state.gd")
 const BuildingDefinitionRef = preload("res://scripts/buildings/building_definition.gd")
 const ConstructionSiteVisualScript = preload("res://scripts/buildings/construction_site_visual.gd")
-const BuildOrderPanelScript = preload("res://scripts/ui/build_order_panel.gd")
 
 const DEFAULT_BUILDING_ID := "campfire"
 const AREA_DRAG_THRESHOLD_PIXELS := 6.0
@@ -17,7 +16,7 @@ const AREA_DRAG_THRESHOLD_PIXELS := 6.0
 @onready var _resource_label: Label = $CanvasLayer/PanelContainer/MarginContainer/ResourceLabel
 @onready var _selected_tile_panel: SelectedTilePanel = $CanvasLayer/SelectedTilePanel
 @onready var _colonist_info_panel: PanelContainer = $CanvasLayer/ColonistInfoPanel
-@onready var _build_order_panel = $CanvasLayer/BuildOrderPanel
+@onready var _bottom_toolbar: PanelContainer = $CanvasLayer/BottomToolbar
 @onready var _colonist_manager: ColonistManager = $ChunkManager/GameplayYSort/ColonistManager
 
 var _world_state
@@ -54,10 +53,10 @@ func _ready() -> void:
 	_chunk_manager.set_world_state(_world_state)
 	_colonist_manager.set_world_state(_world_state)
 	_colonist_manager.population_replaced.connect(_on_colonist_population_replaced)
-	_build_order_panel.building_requested.connect(_on_building_requested)
-	_build_order_panel.harvest_mode_requested.connect(_on_harvest_mode_requested)
-	_build_order_panel.stockpile_mode_requested.connect(_on_stockpile_mode_requested)
-	_build_order_panel.cancel_mode_requested.connect(_cancel_control_mode)
+	_bottom_toolbar.building_requested.connect(_on_building_requested)
+	_bottom_toolbar.harvest_mode_requested.connect(_on_harvest_mode_requested)
+	_bottom_toolbar.stockpile_mode_requested.connect(_on_stockpile_mode_requested)
+	_bottom_toolbar.cancel_mode_requested.connect(_cancel_control_mode)
 	_create_area_drag_preview()
 	_placement_preview = ConstructionSiteVisualScript.new()
 	_placement_preview.name = "ConstructionPlacementPreview"
@@ -124,7 +123,7 @@ func _update_resource_label() -> void:
 			else:
 				action_text += " Zone rejected: %s." % String(_last_stockpile_zone_result.get("reason", "invalid"))
 	else:
-		action_text = "Normal selection. Use Build/Harvest/Stockpile panel or B/H/Z shortcuts."
+		action_text = "Normal selection. Use the bottom toolbar or B/H/Z shortcuts."
 	_resource_label.text = "Wood: %d\nStone: %d\nFood: %d\nStorage: %d / %d\nTime: %s (%s)\n%s" % [
 		_world_state.get_resource_total("wood"),
 		_world_state.get_resource_total("stone"),
@@ -245,13 +244,13 @@ func _cancel_control_mode() -> void:
 func _update_control_mode_ui() -> void:
 	if _placement_mode:
 		var definition: Dictionary = BuildingDefinitionRef.get_definition(_selected_building_id)
-		_build_order_panel.set_mode("Build: %s" % String(definition.get("display_name", _selected_building_id)), true)
+		_bottom_toolbar.set_mode("Build: %s" % String(definition.get("display_name", _selected_building_id)), true)
 	elif _harvest_mode:
-		_build_order_panel.set_mode("Harvest Designation: click or drag", true)
+		_bottom_toolbar.set_mode("Harvest Designation: click or drag", true)
 	elif _stockpile_mode:
-		_build_order_panel.set_mode("Stockpile Zone: drag tiles", true)
+		_bottom_toolbar.set_mode("Stockpile Zone: drag tiles", true)
 	else:
-		_build_order_panel.set_mode("Normal Selection", false)
+		_bottom_toolbar.set_mode("Normal Selection", false)
 
 func get_control_mode_name() -> String:
 	if _placement_mode:
@@ -261,6 +260,9 @@ func get_control_mode_name() -> String:
 	if _stockpile_mode:
 		return "stockpile"
 	return "normal"
+
+func get_selected_building_id() -> String:
+	return _selected_building_id
 
 func _on_building_requested(building_id: String) -> void:
 	_select_building(building_id)
@@ -398,10 +400,14 @@ func _update_placement_preview() -> void:
 
 func _attempt_place_construction() -> void:
 	var target_cell: Vector2i = _chunk_manager.world_to_cell(get_global_mouse_position())
-	var result: Dictionary = _world_state.request_place_construction(_selected_building_id, target_cell)
+	var result: Dictionary = _request_place_selected_building_at_cell(target_cell)
 	if not bool(result.get("ok", false)):
 		push_warning("%s placement failed: %s" % [BuildingDefinitionRef.get_definition(_selected_building_id).get("display_name", _selected_building_id), String(result.get("reason", "unknown"))])
 	_update_placement_preview()
+
+func _request_place_selected_building_at_cell(target_cell: Vector2i) -> Dictionary:
+	## Main routes transient placement intent; WorldState remains the sole mutation authority.
+	return _world_state.request_place_construction(_selected_building_id, target_cell)
 
 func _select_building(building_id: String) -> void:
 	if not BuildingDefinitionRef.has_definition(building_id):

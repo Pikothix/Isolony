@@ -9,7 +9,7 @@
 [ext_resource type="PackedScene" uid="uid://b54qusyyws7f" path="res://scenes/entities/Colonist.tscn" id="7_colonist_scene"]
 [ext_resource type="Script" uid="uid://cabx2m5kqxwcm" path="res://scripts/ui/selected_tile_panel.gd" id="12_selected_tile_panel"]
 [ext_resource type="Script" path="res://scripts/ui/colonist_info_panel.gd" id="13_colonist_info_panel"]
-[ext_resource type="Script" path="res://scripts/ui/build_order_panel.gd" id="14_build_order_panel"]
+[ext_resource type="Script" path="res://scripts/ui/bottom_toolbar.gd" id="14_bottom_toolbar"]
 
 [node name="Main" type="Node2D" unique_id=1855439718]
 script = ExtResource("1_main_script")
@@ -110,70 +110,97 @@ stretch_mode = 5
 layout_mode = 2
 text = "BLANK"
 
-[node name="BuildOrderPanel" type="PanelContainer" parent="CanvasLayer"]
-anchors_preset = 1
-anchor_left = 1.0
-anchor_right = 1.0
-offset_left = -250.0
-offset_top = 130.0
-offset_right = -12.0
-offset_bottom = 434.0
-grow_horizontal = 0
-script = ExtResource("14_build_order_panel")
+[node name="ArchitectMenu" type="PanelContainer" parent="CanvasLayer"]
+visible = false
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -300.0
+offset_top = -190.0
+offset_right = 300.0
+offset_bottom = -94.0
+grow_horizontal = 2
+grow_vertical = 0
 
-[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/BuildOrderPanel"]
+[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/ArchitectMenu"]
 layout_mode = 2
 theme_override_constants/margin_left = 10
 theme_override_constants/margin_top = 8
 theme_override_constants/margin_right = 10
 theme_override_constants/margin_bottom = 8
 
-[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/BuildOrderPanel/MarginContainer"]
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/ArchitectMenu/MarginContainer"]
 layout_mode = 2
 theme_override_constants/separation = 5
 
-[node name="TitleLabel" type="Label" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+[node name="TitleLabel" type="Label" parent="CanvasLayer/ArchitectMenu/MarginContainer/VBoxContainer"]
 layout_mode = 2
-text = "Build & Orders"
+text = "Architect"
+horizontal_alignment = 1
 
-[node name="ModeLabel" type="Label" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+[node name="BuildingButtons" type="HBoxContainer" parent="CanvasLayer/ArchitectMenu/MarginContainer/VBoxContainer"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 8
+
+[node name="BottomToolbar" type="PanelContainer" parent="CanvasLayer"]
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -360.0
+offset_top = -86.0
+offset_right = 360.0
+offset_bottom = -12.0
+grow_horizontal = 2
+grow_vertical = 0
+script = ExtResource("14_bottom_toolbar")
+
+[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/BottomToolbar"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 6
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/BottomToolbar/MarginContainer"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="ModeLabel" type="Label" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer"]
 layout_mode = 2
 text = "Mode: Normal Selection"
+horizontal_alignment = 1
 
-[node name="BuildLabel" type="Label" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+[node name="ToolbarButtons" type="HBoxContainer" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer"]
 layout_mode = 2
-text = "Build"
+alignment = 1
+theme_override_constants/separation = 6
 
-[node name="CampfireButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+[node name="ArchitectButton" type="Button" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer/ToolbarButtons"]
+custom_minimum_size = Vector2(150, 36)
 layout_mode = 2
+toggle_mode = true
+text = "Architect  [B]"
 
-[node name="CabinButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+[node name="HarvestButton" type="Button" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer/ToolbarButtons"]
+custom_minimum_size = Vector2(150, 36)
 layout_mode = 2
+text = "Harvest  [H]"
 
-[node name="StorehouseButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
-layout_mode = 2
-
-[node name="OrdersLabel" type="Label" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
-layout_mode = 2
-text = "Orders"
-
-[node name="HarvestButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
-layout_mode = 2
-text = "Harvest Designation  [H]"
-
-[node name="StockpileButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+[node name="StockpileButton" type="Button" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer/ToolbarButtons"]
+custom_minimum_size = Vector2(150, 36)
 layout_mode = 2
 text = "Stockpile Zone  [Z]"
 
-[node name="CancelButton" type="Button" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
+[node name="CancelButton" type="Button" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer/ToolbarButtons"]
+custom_minimum_size = Vector2(150, 36)
 layout_mode = 2
 disabled = true
-text = "Cancel Mode  [Esc / Right-click]"
-
-[node name="HintLabel" type="Label" parent="CanvasLayer/BuildOrderPanel/MarginContainer/VBoxContainer"]
-layout_mode = 2
-text = "C: complete site   X: cancel site"
-autowrap_mode = 2
+text = "Cancel  [Esc]"
 
 [node name="ColonistInfoPanel" type="PanelContainer" parent="CanvasLayer"]
 anchors_preset = 2

@@ -4,32 +4,34 @@ This document is a concise map of the current Godot colony sim prototype. It dis
 
 ## Current Implementation
 
-- `project.godot` targets Godot `4.6` feature tags and runs `res://scenes/Main.tscn`.
+- `project.godot` targets Godot `4.7` feature tags and runs `res://scenes/Main.tscn`.
 - No autoloads are currently configured.
-- `Main.tscn` wires `Main`, `WorldGenerator`, `ChunkManager`, `TerrainLayer`, `GameplayYSort`, `StockpileZoneRoot`, `GroundItemRoot`, `ResourceRoot`, `ColonistManager`, `Camera2D`, and UI nodes.
+- `Main.tscn` wires `Main`, `WorldGenerator`, `ChunkManager`, `TerrainLayer`, `GameplayYSort`, `StockpileZoneRoot`, `GroundItemRoot`, `ResourceRoot`, `ConstructionRoot`, `ColonistManager`, `Camera2D`, and UI nodes including `BottomToolbar` and `ArchitectMenu`.
 - Terrain and tree/rock/Berry Bush props are streamed around the camera by `ChunkManager`.
 - Generated tile info includes deterministic elevation and a placeholder `ROCK_WALL` cliff terrain for elevation `2`.
 - Colonists are generated or restored by `ColonistManager`; `Colonist` nodes own persistent identity, position, needs, skills, traits, relationships, and work priorities alongside transient activity.
 - Resource counts live in `ResourceStockpile`, owned by a runtime `WorldState` node created by `Main`.
-- Simulation time lives in `TimeState`, owned by `WorldState`.
-- Minimal save/load serialization exists through a non-autoload `SaveGameService`; current limits are documented in `docs/SAVE_BOUNDARY.md`.
-- Campfire/Cabin lifecycle and completed light/warmth/shelter coverage are simulation-authoritative; `ChunkManager` only streams replaceable visuals.
+- Clock/day-night state lives in `TimeState`, owned by `WorldState`. Its pause and scale values affect clock advancement only, not all colonist simulation.
+- Minimal save/load serialization exists through a non-autoload `SaveGameService`. It has no production UI or gameplay caller; current limits are documented in `docs/SAVE_BOUNDARY.md`.
+- Campfire/Cabin/Storehouse lifecycle, completed light/warmth/shelter coverage, and Storehouse capacity derivation are simulation-authoritative; `ChunkManager` only streams replaceable visuals.
 - Player-authored stockpile zones are authoritative `WorldState` records with streamed overlays and provide valid destinations for hauling into shared storage.
 - Completed harvests create authoritative physical ground-item records; abstract stockpile totals change only through explicit stored-resource APIs.
 
 ## Scene And Node Ownership
 
 - `Main` (`scripts/main.gd`): scene coordination, dependency injection, resource/time UI, transient control/area-drag ownership, colonist selection, and construction/harvest/zone request routing.
-- `WorldState` (`scripts/simulation/world_state.gd`): authoritative construction/harvest orders, stockpile zones, and ground items; effect queries; completed-Storehouse capacity derivation; and validated stockpile requests.
+- `WorldState` (`scripts/simulation/world_state.gd`): authoritative construction/harvest orders, stockpile zones, and ground items; bounded deterministic availability snapshots; effect queries; completed-Storehouse capacity derivation; and validated stockpile requests.
 - `ResourceStockpile` (`scripts/simulation/resource_stockpile.gd`): authoritative abstract stored totals/shared capacity, construction resource earmarks, generic capacity reservation support, atomic mutations, and notifications.
-- `TimeState` (`scripts/simulation/time_state.gd`): authoritative runtime clock, day/night phase, pause/scale controls, and time/phase notifications.
-- `SaveGameService` (`scripts/simulation/save_game_service.gd`): non-autoload version `2` coordinator for world/chunk/colonist export and ordered import.
+- `TimeState` (`scripts/simulation/time_state.gd`): authoritative runtime clock, day/night phase, clock-only pause/scale controls, and time/phase notifications. Colonist movement, work, and needs continue from their own process delta.
+- `SaveGameService` (`scripts/simulation/save_game_service.gd`): non-autoload version `2` coordinator for world/chunk/colonist export and ordered import, currently used only by debug or validation code.
 - `WorldGenerator` (`scripts/world/world_generator.gd`): climate noise, direct elevation/terrain classification, tile info construction through `TerrainConfig`, chunk data generation, and resource spawn planning.
-- `ChunkManager` (`scripts/world/chunk_manager.gd`): chunk/resource lifecycle for trees, rocks, and Berry Bushes; authoritative depletion deltas; resource snapshot/commit integration; placement queries; and construction/stockpile-zone/ground-item projection.
+- `ChunkManager` (`scripts/world/chunk_manager.gd`): chunk/resource lifecycle for trees, rocks, and Berry Bushes; live resource indexes; authoritative depletion deltas; resource snapshot/commit integration; placement queries; and construction/stockpile-zone/ground-item projection.
+- `ReachabilityQuery` (`scripts/world/reachability_query.gd`): stateless, bounded orthogonal BFS over currently loaded cells. It reads effective terrain/resource occupancy from `ChunkManager` and construction occupancy from `WorldState`; it owns no authoritative state, cache, or projection.
+- `ResourceNode` (`scripts/entities/resource_node.gd`): loaded resource interaction and visual host. It carries the live resource id, type, yield, and cell consumed by `ChunkManager` harvest snapshots. It emits designation intent and does not mutate stockpile, order, construction, or depletion state itself.
 - `StockpileZoneVisual` (`scripts/world/stockpile_zone_visual.gd`): presentation-only marker for one loaded authoritative zone cell.
 - `GroundItemVisual` (`scripts/world/ground_item_visual.gd`): presentation-only resource-type/amount placeholder for one loaded authoritative ground item.
 - `ResourceVisualDefinition` (`scripts/world/props/resource_visual_definition.gd`): presentation-only resource scene/icon paths, procedural profile ids, and placeholder ids keyed by resource kind.
-- `BuildingDefinition` (`scripts/buildings/building_definition.gd`): Campfire/Cabin/Storehouse registry including footprints, costs, work, effects, visual profile ids, optional scene/icon paths, and placeholder palettes.
+- `BuildingDefinition` (`scripts/buildings/building_definition.gd`): Campfire/Cabin/Storehouse registry including footprints, costs, work, effects, Architect ordering, visual profile ids, optional scene/icon paths, and placeholder palettes.
 - `ConstructionSiteVisual` (`scripts/buildings/construction_site_visual.gd`): definition-configured preview/effect wrapper, optional external scene host, and fallback procedural placeholders; never authoritative.
 - `TerrainConfig` (`scripts/world/terrain_config.gd`): terrain atlas, display, walkability, mineability, placement, and resource support metadata.
 - `TerrainLayer`: tile rendering for ground terrain.
@@ -40,20 +42,20 @@ This document is a concise map of the current Godot colony sim prototype. It dis
 - `ConstructionRoot`: parent for construction-site projections belonging to loaded chunks.
 - `ColonistManager` (`scripts/entities/colonist_manager.gd`): population export/replacement, stable-id relationship resolution, deterministic new-population generation, hit queries, dependency injection, and stale-reservation audit.
 - `ColonistTraitRegistry` (`scripts/entities/colonist_trait_registry.gd`): static trait metadata, conflict exclusions, and bounded modifier values.
-- `Colonist` (`scripts/entities/colonist.gd`): authoritative persistent identity/position/needs/skills/traits/relationships/work priorities plus transient construction/harvest/need-seeking activity and cleanup.
+- `Colonist` (`scripts/entities/colonist.gd`): authoritative persistent identity/position/needs/skills/traits/relationships/work priorities plus transient construction/harvest/haul/eating/need-seeking activity, current cell path, and cleanup.
 - `Camera2D` (`scripts/camera_controller.gd`): camera movement and zoom.
-- UI nodes: resource counter label, selected tile panel, read-only selected colonist info panel, and request-only Build & Orders panel.
+- UI nodes: resource counter label, selected tile panel, read-only selected colonist info panel, request-only bottom toolbar, and transient Architect submenu.
 
-## Build And Order UI Flow
+## Bottom Toolbar And Architect UI Flow
 
-1. `BuildOrderPanel` emits a building id, Harvest-mode request, Stockpile-mode request, or Cancel request; it owns no simulation records.
-2. `Main` owns Normal/Build/Harvest/Stockpile mode and projects the current mode back into the panel label.
-3. A building button selects the existing registry id, enables the existing placement preview, and continues through `WorldState` placement requests.
+1. `BottomToolbar` emits a building id, Harvest-mode request, Stockpile-mode request, or Cancel request; it owns no simulation records.
+2. Architect toggles the sibling `ArchitectMenu`. The script generates one button per stable id returned by `BuildingDefinition.get_building_ids()`, using definition display/icon/cost/footprint metadata.
+3. Selecting a building closes the submenu, emits its stable id, and enters the existing placement mode. `Main` owns Normal/Build/Harvest/Stockpile mode and projects the current mode back into the toolbar label.
 4. Harvest mode supports a `ResourceNode` single-click release or a Main-owned click-drag rectangle. Main observes press/motion, displays a transient cell-aligned polygon, and consumes only releases reaching the six-pixel drag threshold.
 5. `ChunkManager.get_loaded_resources_in_cell_rect()` returns read-only metadata for loaded tracked nodes. Main submits every returned resource id separately through the existing `WorldState.request_designate_harvest()` authority and records result counts.
 6. Stockpile mode reuses the cell rectangle and blue preview, converts the inclusive bounds to cells, and submits them once through `WorldState.request_create_stockpile_zone()`.
 7. Cancel, Escape, right-click, or leaving an area mode clears transient drag/preview state and disables harvest-click intent.
-8. Keyboard shortcuts remain alternate input into the same `Main` methods. No UI mode, drag state, preview geometry, or result label enters save data; successful orders/zones use their authoritative save boundaries.
+8. Keyboard shortcuts remain alternate input into the same `Main` methods. No toolbar/menu state, selected button, UI mode, drag state, preview geometry, or result label enters save data; successful construction/orders/zones use their authoritative save boundaries.
 
 ## Stockpile Zone Flow
 
@@ -68,7 +70,7 @@ This document is a concise map of the current Godot colony sim prototype. It dis
 
 1. Gameplay ids select authoritative definitions; visual profile ids and scene/icon paths are presentation fields inside those definitions.
 2. `ConstructionSiteVisual` receives visual metadata from `BuildingDefinition`, draws the matching fallback profile, or instantiates the configured state-specific `Node2D` scene.
-3. `BuildOrderPanel` derives building names/icons from the same definition and emits only stable building ids.
+3. `BottomToolbar` generates Architect buttons from the same definitions and emits only stable building ids.
 4. Resource spawn data keeps its stable kind/type/yield/cell. `ResourceVisualDefinition` resolves the default scene and procedural profile without entering resource state or save data.
 5. `PropVisualConfig`, tree/rock profile scripts, and `ProcSpriteCache` remain an isolated procedural presentation pipeline. Berry Bush and colonist placeholder art remain replaceable scene-local children.
 6. Rendered nodes, palettes, icons, external visual scenes, and generated textures are excluded from persistence. See `docs/ASSET_REPLACEMENT.md` for replacement contracts.
@@ -87,15 +89,17 @@ This document is a concise map of the current Godot colony sim prototype. It dis
 10. `PropVisualConfig` and the procgen profile scripts provide deterministic procedural sprite settings.
 11. Manual tile overrides and depleted resource ids are stored outside loaded chunk dictionaries and reapplied/skipped during chunk generation.
 
+Generated-resource authority is divided across deterministic spawn data, `ChunkManager`'s live index and depletion set, and the loaded `ResourceNode` record. The live node is therefore more than a visual projection during harvest validation, even though it does not authorize stockpile or order mutations.
+
 There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registry.gd` files in the current repository. Biome-like terrain selection is currently embedded in `world_generator.gd`, with terrain metadata in `terrain_config.gd`.
 
 ## Resource Harvesting Flow
 
 1. `WorldGenerator` and `PropSpawnHelpers` produce tree/rock/Berry Bush spawn records as part of chunk generation.
 2. `ChunkManager` instantiates `Tree.tscn`, `Rock.tscn`, or `BerryBush.tscn` under `ResourceRoot`.
-3. Each spawned scene uses `scripts/entities/resource_node.gd`.
-4. `ResourceNode` emits designation intent for an unconsumed left-button release; it does not mutate resource or stockpile state. Main consumes area-drag releases, preventing the same gesture from also becoming a single click.
-5. For area input, `ChunkManager` returns defensive metadata for currently loaded resources inside the inclusive cell rectangle. For every single or area request, it supplies the existing read-only live-resource snapshot to `WorldState.request_designate_harvest()`.
+3. Each spawned scene uses `scripts/entities/resource_node.gd`. `ChunkManager` assigns the deterministic resource id/type/yield/cell to that loaded node and tracks it in `_resource_index`.
+4. `ResourceNode` emits designation intent for an unconsumed left-button release; it does not mutate stockpile, orders, construction, or depletion state. Main consumes area-drag releases, preventing the same gesture from also becoming a single click.
+5. For area input, `ChunkManager` returns defensive metadata for currently loaded resources inside the inclusive cell rectangle. For every single or area request, it builds the read-only live-resource snapshot from the indexed `ResourceNode` and supplies that snapshot to `WorldState.request_designate_harvest()`.
 6. `WorldState` owns active order records and transient reservation owner ids. Order signals drive the optional marker projection on loaded `ResourceNode` instances.
 7. Idle colonists consider critical needs, eating, and construction before claiming an available harvest order. Claiming reserves only the authoritative order; stored capacity is irrelevant until a later Haul job deposits the item.
 8. Completion prevalidates the worker, live resource snapshot, and deterministic pending item record before mutation.
@@ -118,7 +122,16 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 4. Colonist movement reaches the item, `request_pickup_ground_item()` removes the ground record/projection, then movement continues to the reserved zone cell.
 5. `request_deposit_carried_item()` revalidates owner, item, destination, zone, and capacity; it consumes the capacity reservation and adds the complete amount to stored totals.
 6. Cancellation before pickup leaves the item and releases capacity. After pickup, the colonist drops an equivalent item at its current cell; stale-owner cleanup falls back to the pickup cell.
-7. No filtering, partial carrying, multiple carried items, zone-to-zone hauling, or pathfinding exists.
+7. Assignment requires a loaded-cell path to the item and from the item to the proposed zone destination. The route to the destination is recomputed after pickup; failure uses the existing drop-and-release cleanup. No filtering, partial carrying, multiple carried items, zone-to-zone hauling, or off-screen routing exists.
+
+## Reachability And Colonist Movement Flow
+
+1. `ReachabilityQuery.find_path()` runs a synchronous orthogonal BFS through currently loaded cells, capped at 4,096 visited cells by default. Returned paths exclude the start cell and include the target.
+2. Effective non-walkable, water, `ROCK_WALL`, and mineable cells are blocked. Construction footprints and generated resources are blocked except for an explicitly allowed job target. Stockpile zones and ground items are non-blocking.
+3. `ChunkManager` remains the source for loaded/effective terrain and generated-resource occupancy. `WorldState` remains the source for construction occupancy and all job/reservation mutation. The query helper owns no authoritative state.
+4. Each `Colonist` owns only its transient current path and index. Wandering, construction, harvest, haul pickup/deposit, warmth, and shelter movement advance cell by cell through the existing world-position conversion.
+5. A step that becomes invalid fails the activity safely. Job movement releases its existing authoritative reservations; haul cleanup restores a carried item according to the existing drop rules.
+6. Paths are cleared on idle, completion, failure, and import. They are not serialized.
 
 ## Berry Bush Flow
 
@@ -146,8 +159,8 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 
 ## Construction Placement Flow
 
-1. `Main` toggles the temporary Campfire selector with `B` and asks `WorldState` to validate the mouse cell for preview coloring.
-2. On left-click, `Main` requests `WorldState.request_place_construction("campfire", cell)`.
+1. `Main` toggles generic building-placement mode with `B`; building buttons or keys `1` through `3` select Campfire, Cabin, or Storehouse. It asks `WorldState` to validate the selected building at the mouse cell for preview coloring.
+2. On left-click, `Main` calls `WorldState.request_place_construction(selected_building_id, cell)`.
 3. `WorldState` resolves the `BuildingDefinition`, builds its footprint, and reads loaded-cell, effective-terrain, and generated-resource occupancy through `ChunkManager` queries.
 4. Unknown definitions, invalid footprints, unloaded/non-walkable/blocked terrain, resources, and existing construction occupancy are rejected without mutation.
 5. A valid request creates the authoritative incomplete site record and occupied-cell index in `WorldState`.
@@ -165,9 +178,9 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 
 ## Colonist Construction Work Flow
 
-1. During normal job collection, an idle colonist asks `WorldState.get_available_construction_site()` only when its Construct priority is enabled, then projects the result into a transient candidate.
+1. During normal job collection, an idle colonist asks `WorldState.get_available_construction_sites(16)` only when its Construct priority is enabled, checks each returned origin for reachability, and projects each reachable result into a transient candidate.
 2. `reserve_construction_site()` first earmarks the full site cost under a deterministic resource reservation id, then assigns the site to one colonist. Competing or overcommitted reservations fail without mutation.
-3. The colonist enters `moving_to_construction` and moves directly to the site's origin using the existing movement implementation.
+3. Before reservation, the colonist requires a path to the site's origin with the construction target exception. After reservation it revalidates the route, enters `moving_to_construction`, and follows the transient cell path; failed revalidation immediately releases the reservation and earmark.
 4. At the origin it enters `constructing` and submits `get_effective_construction_work_rate() * delta` through `request_progress_construction(site_id, amount, colonist_id)`. Hard Worker and Lazy supply the only current construction multipliers.
 5. Worker progress is rejected unless the reservation belongs to that colonist. The first valid tick consumes and clears the earmark; later ticks accumulate progress without another spend.
 6. Releasing work before first progress releases the earmark and restores availability. Completion clears the worker reservation and returns the colonist to idle.
@@ -229,6 +242,7 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 3. `TimeState` updates the simulation clock and emits time/phase signals.
 4. `WorldState` forwards those signals for presentation.
 5. `Main` updates the existing UI label with the current time and day/night phase.
+6. `TimeState.paused` and `time_scale` do not pause or scale `Colonist._process()`. Colonist movement, needs, and work continue from raw frame delta.
 
 ## Colonist Needs Flow
 
@@ -238,8 +252,8 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 4. `WorldState` remains the environmental authority: Campfire warmth and Cabin shelter are derived from completed construction records and definitions, not from visual nodes.
 5. The overhead `R/W/S/H` label, selected-colonist panel, and manager summary expose values without owning or authorizing state changes.
 6. At night, idle decision-making checks Warmth and Shelter thresholds before construction and wandering. The lower qualifying need wins, with Warmth winning ties.
-7. `WorldState.get_nearest_warmed_cell()` and `get_nearest_sheltered_cell()` scan completed effect sources for the nearest loaded, walkable, resource-free, construction-free covered cell. This is target validation, not pathfinding.
-8. `seeking_warmth` and `seeking_shelter` reuse direct movement, hold position while the chosen effect recovers the need to 80, and safely return to ordinary idle selection if the source disappears or no valid cell exists.
+7. `WorldState.get_nearest_warmed_cell()` and `get_nearest_sheltered_cell()` scan completed effect sources for the nearest loaded, walkable, resource-free, construction-free covered cell. `Colonist` then requires a `ReachabilityQuery` path before entering need-seeking.
+8. `seeking_warmth` and `seeking_shelter` follow the transient cell path, hold position while the chosen effect recovers the need to 80, and safely return to ordinary idle selection if the source disappears, the route becomes blocked, or no reachable cell exists.
 9. Hunger below 60 triggers stockpile eating only from idle. Active movement/construction remains uninterrupted. Need values persist in version `2`; eating activity does not.
 
 ## Colonist Eating Flow
@@ -265,7 +279,7 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 ## Colonist Identity And Selection Flow
 
 1. `ColonistManager` allocates a unique spawn-order runtime id and deterministic first/last name before initializing each colonist.
-2. The `Colonist` node owns its id, first name, last name, optional nickname, activity, and needs. `set_nickname()` is the only nickname mutation API introduced by this milestone.
+2. The `Colonist` node owns its id, first name, last name, optional nickname, activity, and needs. `set_nickname()` is its current nickname mutation API.
 3. On an ordinary left-click, `Main` asks `ColonistManager` for the nearest live colonist within the small visual hit radius.
 4. `Main` clears the previous marker, applies the new marker, and passes the selected node to the colonist info panel. A terrain click passes `null`, hides the panel, and continues the existing manual terrain placement flow.
 5. The colonist info panel reads and formats the selected node's identity/activity/needs/relationships/traits/skills each frame. It owns no colonist state and ignores mouse input.
@@ -311,13 +325,15 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 
 1. `Colonist` owns a normalized dictionary covering Construct, Harvest, Haul, Mine, Farm, Cook, Craft, Doctor, Research, and Guard. `0` disables work; `1` through `4` are enabled from highest to lowest priority.
 2. Construct and Harvest default to `2`. Implemented Haul defaults to `0`, preserving older behavior until the player enables it; unimplemented types also remain `0`.
-3. Idle selection checks warmth/shelter and eating before work. `collect_available_jobs()` emits enabled construction, harvest, and haul candidates in that equal-priority source order.
-4. Each candidate contains `job_type`, numeric `priority`, `target_id`, `target_cell`, and an initially empty `reservation_result`. Candidates are transient Colonist data and are not authoritative records.
-5. `choose_best_job()` attempts authoritative reservation in ascending numeric priority order. Equal priorities retain collection order, so construction wins ties. Failed reservations are skipped; only a successfully reserved candidate can be selected.
-6. `start_job()` validates the reservation and translates the candidate into focused construction, harvest, or hauling activity fields. A failed later start releases the WorldState reservation.
-7. `WorldState` remains authoritative for availability, reservations, pickup/deposit, progress, and completion through separate focused APIs. There is no shared job board.
-8. The info panel reads a defensive priority copy and calls `set_work_priority()` for Construct, Harvest, and Haul buttons. It never retains a separate simulation value.
-9. Colonist export includes the priority dictionary but excludes candidates/current jobs. Missing dictionaries in older version-2 records normalize to defaults, so `SaveGameService.SAVE_VERSION` remains `2`; activity and reservations still reset on import and work is rediscovered.
+3. Idle selection checks warmth/shelter and eating before work. `WorldState` exposes up to 16 currently valid, unreserved records per implemented work type in stable-id order. These list queries do not mutate reservations or storage capacity.
+4. `collect_available_jobs()` checks every returned record and emits enabled, currently reachable construction, harvest, and haul candidates in that source order. Haul validates both route legs from the proposed non-mutating destination.
+5. Each candidate contains `job_type`, numeric `priority`, `target_id`, `target_cell`, and an initially empty `reservation_result`. Candidates are transient Colonist data and are not authoritative records.
+6. `choose_best_job()` attempts authoritative reservation in ascending numeric priority order. Equal priorities retain collection order, so construction wins ties and stable-id order breaks ties within one work type. Failed reservations are skipped; only a successfully reserved candidate can be selected.
+7. Haul availability computes a proposed destination without reserving capacity. `reserve_haul_item()` recomputes the destination and revalidates capacity immediately before mutation.
+8. `start_job()` validates the reservation and route, then translates the candidate into focused construction, harvest, or hauling activity and transient path fields. A failed or newly unreachable start releases the WorldState reservation immediately.
+9. `WorldState` remains authoritative for availability, reservations, pickup/deposit, progress, and completion through separate focused APIs. There is no shared job board.
+10. The info panel reads a defensive priority copy and calls `set_work_priority()` for Construct, Harvest, and Haul buttons. It never retains a separate simulation value.
+11. Colonist export includes the priority dictionary but excludes candidate lists/current jobs. Missing dictionaries in older version-2 records normalize to defaults, so `SaveGameService.SAVE_VERSION` remains `2`; activity and reservations still reset on import and work is rediscovered.
 
 ## Current Tuning Entry Points
 
@@ -334,14 +350,18 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 - Effect queries currently scan completed Campfire/Cabin records directly; a spatial index may be required if building counts become large.
 - Terrain classification remains in `WorldGenerator`, while terrain metadata access for placement, preview, walkability, and prop support is centralized in `TerrainConfig`.
 - Elevation is generated state only; mined/altered elevation is not implemented and would need player-delta persistence.
-- Harvest designation starts from either a `ResourceNode` click or Main's transient area tool, while worker assignment, completion, depletion, and item creation are simulation-owned. The area query and shared job-candidate interface do not unify those authoritative transactions.
+- Loaded `ResourceNode` identity/type/yield/cell fields participate in authoritative harvest validation. Harvest work is unavailable when the matching resource is not loaded/indexed, even though base spawn data is deterministic.
+- Harvest designation starts from either a `ResourceNode` click or Main's transient area tool, while worker assignment, completion, depletion, and item creation are owned by `WorldState`/`ChunkManager`. The area query and shared job-candidate interface do not unify those authoritative transactions.
 - Stockpile zones currently store explicit cell arrays and render one node per loaded cell. Large or numerous zones may eventually need compact rectangle/run storage and batched rendering.
 - Manual tile overrides and depleted resource ids are saved through `ChunkManager`, but still live outside `WorldState`.
 - Save/load is minimal; version `2` includes colonist persistence, but no menus, full scene reload, migration, general jobs, weather, or seasons exist.
 - `ChunkManager` owns several responsibilities at once: streaming, terrain writes, resource lifecycle, staged spawning, and procedural cache prewarm.
 - Scene-level exported overrides in `Main.tscn` are part of the real runtime baseline and can differ from script defaults.
+- `TimeState` pause/scale controls only the clock; it is not a full simulation pause/speed authority for colonists.
+- Camera zoom allows a script minimum of `0`, while `Main.tscn` overrides the script maximum from `2.0` to `200.0`. Reaching zero makes camera movement divide by `zoom.x`, and the scene/script tuning ranges are materially inconsistent.
 - Harvest completion coordinates `ChunkManager` depletion and WorldState item creation after complete preflight. Future asynchronous/concurrent mutation would require an explicit transaction/rollback boundary.
 - `SaveGameService.apply_save_data()` mutates owners in load order and cannot roll back earlier imports if a later owner rejects its data. A future user-facing load path should validate or stage the complete document before committing replacements.
+- Reachability is synchronous, bounded to loaded cells, and recomputed without a cache. Each idle decision can evaluate up to 16 candidates per work type, including two paths per haul candidate; work beyond that stable-id-ordered window is deferred.
 
 ## Planned Future Direction
 

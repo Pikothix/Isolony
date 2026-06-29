@@ -9,6 +9,7 @@ const DEFINITIONS := {
 	"campfire": {
 		"id": "campfire",
 		"display_name": "Campfire",
+		"architect_order": 10,
 		"footprint": Vector2i(1, 1),
 		"cost": {"wood": 5},
 		"build_time": 10.0,
@@ -33,6 +34,7 @@ const DEFINITIONS := {
 	"cabin": {
 		"id": "cabin",
 		"display_name": "Cabin",
+		"architect_order": 20,
 		"footprint": Vector2i(2, 2),
 		"cost": {"wood": 20},
 		"build_time": 30.0,
@@ -58,6 +60,7 @@ const DEFINITIONS := {
 	"storehouse": {
 		"id": "storehouse",
 		"display_name": "Storehouse",
+		"architect_order": 30,
 		"footprint": Vector2i(3, 2),
 		"cost": {"wood": 30, "stone": 10},
 		"build_time": 50.0,
@@ -89,6 +92,18 @@ static func get_definition(building_id: String) -> Dictionary:
 	if not has_definition(building_id):
 		return {}
 	return DEFINITIONS[building_id].duplicate(true)
+
+static func get_building_ids() -> Array[String]:
+	## Presentation-safe deterministic registry order; callers receive no mutable definition references.
+	var building_ids: Array[String] = []
+	for building_id_value: Variant in DEFINITIONS.keys():
+		building_ids.append(String(building_id_value))
+	building_ids.sort_custom(func(first: String, second: String) -> bool:
+		var first_order: int = int(DEFINITIONS[first].get("architect_order", 0))
+		var second_order: int = int(DEFINITIONS[second].get("architect_order", 0))
+		return first_order < second_order if first_order != second_order else first < second
+	)
+	return building_ids
 
 static func get_visual_metadata(building_id: String) -> Dictionary:
 	var definition: Dictionary = get_definition(building_id)

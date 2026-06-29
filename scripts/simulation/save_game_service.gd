@@ -4,7 +4,7 @@ class_name SaveGameService
 const SAVE_VERSION := 2
 
 ## Purpose: Small, non-autoload persistence service for current world and colonist authority.
-## Responsibility: Serialize/deserialize versioned save dictionaries and coordinate state-owner import order, including harvest intent, zones, and ground items.
+## Responsibility: Validate top-level save structure, serialize/deserialize versioned dictionaries, and coordinate state-owner import order, including harvest intent, zones, and ground items.
 ## Assumption: Menus, slots, full scene reload, migration, and future systems remain outside this milestone.
 func build_save_data(world_generator: Node, world_state: Node, chunk_manager: Node, colonist_manager: Node) -> Dictionary:
 	var world_state_data: Dictionary = world_state.export_state()
@@ -47,9 +47,10 @@ func load_from_file(path: String, world_generator: Node, world_state: Node, chun
 func apply_save_data(save_data: Dictionary, world_generator: Node, world_state: Node, chunk_manager: Node, colonist_manager: Node) -> Dictionary:
 	if int(save_data.get("version", -1)) != SAVE_VERSION:
 		return _build_result(false, "unsupported_version", save_data)
+	var structure_result: Dictionary = _validate_save_structure(save_data)
+	if not bool(structure_result.get("ok", false)):
+		return _build_result(false, String(structure_result.get("reason", "invalid_structure")), save_data)
 	var colonist_records: Variant = save_data.get("colonists", null)
-	if not colonist_records is Array:
-		return _build_result(false, "invalid_colonists", save_data)
 	var world_result: Dictionary = world_generator.import_generation_state(save_data.get("world", {}))
 	if not bool(world_result.get("ok", false)):
 		return _build_result(false, "world_%s" % String(world_result.get("reason", "failed")), save_data)
@@ -72,6 +73,46 @@ func apply_save_data(save_data: Dictionary, world_generator: Node, world_state: 
 	if not bool(colonist_result.get("ok", false)):
 		return _build_result(false, "colonists_%s" % String(colonist_result.get("reason", "failed")), save_data)
 	return _build_result(true, "loaded", save_data)
+
+func _validate_save_structure(save_data: Dictionary) -> Dictionary:
+	## Reject missing or mistyped owner sections before any owner mutates live state.
+	for section_name: String in ["world", "time", "stockpile", "deltas"]:
+		if not save_data.has(section_name):
+			return _build_validation_result(false, "missing_%s" % section_name)
+		if not save_data[section_name] is Dictionary:
+			return _build_validation_result(false, "invalid_%s" % section_name)
+	if not save_data.has("colonists"):
+		return _build_validation_result(false, "missing_colonists")
+	if not save_data["colonists"] is Array:
+		return _build_validation_result(false, "invalid_colonists")
+	var world_validation: Dictionary = _validate_world_generation_state(save_data["world"])
+	if not bool(world_validation.get("ok", false)):
+		return world_validation
+	return _build_validation_result(true, "valid")
+
+func _validate_world_generation_state(world_data: Dictionary) -> Dictionary:
+	if not world_data.has("seed") or not _is_numeric(world_data["seed"]) or not is_finite(float(world_data["seed"])):
+		return _build_validation_result(false, "invalid_world_seed")
+	if not world_data.has("generation_config") or not world_data["generation_config"] is Dictionary:
+		return _build_validation_result(false, "invalid_world_generation_config")
+	var config: Dictionary = world_data["generation_config"]
+	for key: String in ["terrain_scale", "landmass_scale", "water_max", "coast_max", "stone_min", "dry_max", "wet_min", "saturated_min", "chunk_size"]:
+		if config.has(key) and (not _is_numeric(config[key]) or not is_finite(float(config[key]))):
+			return _build_validation_result(false, "invalid_world_generation_config")
+	if float(config.get("terrain_scale", 1.0)) <= 0.0 or float(config.get("landmass_scale", 1.0)) <= 0.0:
+		return _build_validation_result(false, "invalid_world_generation_config")
+	if int(config.get("chunk_size", 1)) <= 0:
+		return _build_validation_result(false, "invalid_world_generation_config")
+	return _build_validation_result(true, "valid")
+
+func _is_numeric(value: Variant) -> bool:
+	return typeof(value) == TYPE_INT or typeof(value) == TYPE_FLOAT
+
+func _build_validation_result(ok: bool, reason: String) -> Dictionary:
+	return {
+		"ok": ok,
+		"reason": reason,
+	}
 
 func _build_result(ok: bool, reason: String, save_data: Dictionary) -> Dictionary:
 	return {

@@ -25,6 +25,8 @@ signal ground_items_replaced()
 const ResourceStockpileScript = preload("res://scripts/simulation/resource_stockpile.gd")
 const TimeStateScript = preload("res://scripts/simulation/time_state.gd")
 const BuildingDefinitionRef = preload("res://scripts/buildings/building_definition.gd")
+const DEFAULT_JOB_CANDIDATE_LIMIT := 16
+const MAX_JOB_CANDIDATE_LIMIT := 64
 
 var _resource_stockpile
 var _time_state
@@ -153,17 +155,31 @@ func request_cancel_construction(site_id: String) -> Dictionary:
 	return _build_cancellation_result(true, "cancelled", site_id, building_id, origin_cell, resources_consumed)
 
 func get_available_construction_site() -> Dictionary:
-	for site_id: Variant in _construction_sites.keys():
-		var id_text: String = String(site_id)
+	var sites: Array[Dictionary] = get_available_construction_sites(1)
+	return sites[0] if not sites.is_empty() else {}
+
+func get_available_construction_sites(limit: int = DEFAULT_JOB_CANDIDATE_LIMIT) -> Array[Dictionary]:
+	## Return a bounded stable-id-ordered snapshot without creating worker or resource reservations.
+	var sites: Array[Dictionary] = []
+	var candidate_limit: int = clampi(limit, 0, MAX_JOB_CANDIDATE_LIMIT)
+	if candidate_limit == 0:
+		return sites
+	var site_ids: Array[String] = []
+	for site_id_value: Variant in _construction_sites.keys():
+		site_ids.append(String(site_id_value))
+	site_ids.sort()
+	for site_id: String in site_ids:
 		var site: Dictionary = _construction_sites[site_id]
-		if bool(site.get("completed", false)) or _construction_reservations.has(id_text):
+		if bool(site.get("completed", false)) or _construction_reservations.has(site_id):
 			continue
 		if _placement_query != null and not _placement_query.is_cell_loaded(site.get("origin_cell", Vector2i.ZERO)):
 			continue
 		if not _can_fund_construction_site(site):
 			continue
-		return site.duplicate(true)
-	return {}
+		sites.append(site.duplicate(true))
+		if sites.size() >= candidate_limit:
+			break
+	return sites
 
 func reserve_construction_site(colonist_id: String, site_id: String) -> Dictionary:
 	if colonist_id.is_empty():
@@ -729,8 +745,15 @@ func _commit_ground_item(item: Dictionary, next_id: int) -> void:
 	ground_item_added.emit(item.duplicate(true))
 
 func get_available_haul_item(_colonist_id: String = "") -> Dictionary:
-	if _placement_query == null:
-		return {}
+	var items: Array[Dictionary] = get_available_haul_items(_colonist_id, 1)
+	return items[0] if not items.is_empty() else {}
+
+func get_available_haul_items(_colonist_id: String = "", limit: int = DEFAULT_JOB_CANDIDATE_LIMIT) -> Array[Dictionary]:
+	## Destination selection is read-only here; reserve_haul_item() recomputes it and reserves capacity atomically.
+	var candidates: Array[Dictionary] = []
+	var candidate_limit: int = clampi(limit, 0, MAX_JOB_CANDIDATE_LIMIT)
+	if candidate_limit == 0 or _placement_query == null:
+		return candidates
 	for item: Dictionary in get_ground_items():
 		var item_id: String = String(item.get("item_id", ""))
 		var item_cell: Vector2i = item.get("cell", Vector2i.ZERO)
@@ -746,8 +769,10 @@ func get_available_haul_item(_colonist_id: String = "") -> Dictionary:
 			continue
 		var candidate: Dictionary = item.duplicate(true)
 		candidate["destination_cell"] = destination.get("cell", Vector2i.ZERO)
-		return candidate
-	return {}
+		candidates.append(candidate)
+		if candidates.size() >= candidate_limit:
+			break
+	return candidates
 
 func reserve_haul_item(item_id: String, colonist_id: String) -> Dictionary:
 	if item_id.is_empty():
@@ -1061,17 +1086,30 @@ func has_harvest_order_for_resource(resource_id: String) -> bool:
 	return _harvest_order_by_resource.has(resource_id)
 
 func get_available_harvest_order() -> Dictionary:
-	if _placement_query == null:
-		return {}
-	for order_id: Variant in _harvest_orders.keys():
+	var orders: Array[Dictionary] = get_available_harvest_orders(1)
+	return orders[0] if not orders.is_empty() else {}
+
+func get_available_harvest_orders(limit: int = DEFAULT_JOB_CANDIDATE_LIMIT) -> Array[Dictionary]:
+	## Return valid live-resource-backed intent in deterministic order without reserving an order.
+	var orders: Array[Dictionary] = []
+	var candidate_limit: int = clampi(limit, 0, MAX_JOB_CANDIDATE_LIMIT)
+	if candidate_limit == 0 or _placement_query == null:
+		return orders
+	var order_ids: Array[String] = []
+	for order_id_value: Variant in _harvest_orders.keys():
+		order_ids.append(String(order_id_value))
+	order_ids.sort()
+	for order_id: String in order_ids:
 		var order: Dictionary = _harvest_orders[order_id]
 		if not String(order.get("reserved_by_colonist_id", "")).is_empty():
 			continue
 		var snapshot: Dictionary = _placement_query.get_harvest_resource_snapshot(String(order.get("resource_id", "")))
 		if not _harvest_snapshot_matches_order(snapshot, order):
 			continue
-		return order.duplicate(true)
-	return {}
+		orders.append(order.duplicate(true))
+		if orders.size() >= candidate_limit:
+			break
+	return orders
 
 func reserve_harvest_order(order_id: String, colonist_id: String) -> Dictionary:
 	if colonist_id.is_empty():

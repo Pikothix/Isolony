@@ -1,11 +1,12 @@
 extends Node2D
 class_name Colonist
 
-## Purpose: Persistent colonist records plus runtime movement, prioritized work, needs, and need-seeking behavior.
-## Responsibility: Own authoritative identity, character data, needs, and work priorities while executing simulation-issued work orders.
-## Assumption: Import resumes from idle at the saved position; jobs, carrying, reservations, movement targets, selection, and debug state are not saved.
+## Purpose: Persistent colonist records plus transient loaded-cell path movement, prioritized work, needs, and need-seeking behavior.
+## Responsibility: Own authoritative identity, character data, needs, and work priorities while executing simulation-issued work orders over non-authoritative paths.
+## Assumption: Import resumes from idle at the saved position; jobs, paths, carrying, reservations, movement targets, selection, and debug state are not saved.
 
 const TraitRegistryRef = preload("res://scripts/entities/colonist_trait_registry.gd")
+const ReachabilityQueryRef = preload("res://scripts/world/reachability_query.gd")
 
 const SKILL_NAMES: Array[String] = [
 	"Construction",
@@ -43,6 +44,7 @@ const WORK_PRIORITY_MAX := 4
 const JOB_TYPE_CONSTRUCT := "construct"
 const JOB_TYPE_HARVEST := "harvest"
 const JOB_TYPE_HAUL := "haul"
+const JOB_CANDIDATE_LIMIT := 16
 const DEFAULT_WORK_PRIORITIES := {
 	"Construct": 2,
 	"Harvest": 2,
@@ -125,6 +127,8 @@ var _haul_item_id: String = ""
 var _haul_destination_cell: Vector2i = Vector2i.ZERO
 var _haul_travel_elapsed: float = 0.0
 var _carried_item: Dictionary = {}
+var _current_path: Array[Vector2i] = []
+var _path_index: int = 0
 var _target_position: Vector2 = Vector2.ZERO
 var _pause_timer: float = 0.0
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
@@ -293,6 +297,13 @@ func get_haul_item_id() -> String:
 func get_carried_item() -> Dictionary:
 	return _carried_item.duplicate(true)
 
+func get_current_path() -> Array[Vector2i]:
+	## Validation/debug read only; path cells are transient and never exported.
+	return _current_path.duplicate()
+
+func has_active_path() -> bool:
+	return _path_index < _current_path.size()
+
 func get_needs_state() -> Dictionary:
 	return {
 		"rest": rest,
@@ -412,7 +423,7 @@ func _get_trait_modifier_product(modifier_name: String) -> float:
 	return product
 
 func _reset_transient_state() -> void:
-	## Imported colonists deliberately forget jobs and movement so runtime authorities can assign fresh work.
+	## Imported colonists deliberately forget jobs and paths so runtime authorities can assign fresh work.
 	_construction_site_id = ""
 	_construction_travel_elapsed = 0.0
 	_eating_timer = 0.0
@@ -423,6 +434,7 @@ func _reset_transient_state() -> void:
 	_haul_destination_cell = Vector2i.ZERO
 	_haul_travel_elapsed = 0.0
 	_carried_item.clear()
+	_clear_path()
 	target_cell = current_cell
 	_target_position = global_position
 	set_selected(false)
@@ -489,40 +501,53 @@ func _try_start_prioritized_work() -> bool:
 	return not job.is_empty() and start_job(job)
 
 func collect_available_jobs() -> Array[Dictionary]:
-	## Project focused WorldState work sources into transient, non-authoritative candidates.
+	## Project reachable focused WorldState work sources into transient, non-authoritative candidates.
 	## Source order is the stable tie-break: construction, then harvest, then haul.
 	var jobs: Array[Dictionary] = []
 	if world_state == null or colonist_id.is_empty():
 		return jobs
 	if can_do_work("Construct"):
-		var site: Dictionary = world_state.get_available_construction_site()
-		if not site.is_empty():
+		for site: Dictionary in world_state.get_available_construction_sites(JOB_CANDIDATE_LIMIT):
+			var site_cell: Vector2i = site.get("origin_cell", current_cell)
+			var site_path: Dictionary = _query_path(site_cell, true, false)
+			if not bool(site_path.get("reachable", false)):
+				continue
 			jobs.append({
 				"job_type": JOB_TYPE_CONSTRUCT,
 				"priority": get_work_priority("Construct"),
 				"target_id": String(site.get("site_id", "")),
-				"target_cell": site.get("origin_cell", current_cell),
+				"target_cell": site_cell,
 				"reservation_result": {},
 			})
 	if can_do_work("Harvest"):
-		var order: Dictionary = world_state.get_available_harvest_order()
-		if not order.is_empty():
+		for order: Dictionary in world_state.get_available_harvest_orders(JOB_CANDIDATE_LIMIT):
+			var order_cell: Vector2i = order.get("cell", current_cell)
+			var order_path: Dictionary = _query_path(order_cell, false, true)
+			if not bool(order_path.get("reachable", false)):
+				continue
 			jobs.append({
 				"job_type": JOB_TYPE_HARVEST,
 				"priority": get_work_priority("Harvest"),
 				"target_id": String(order.get("order_id", "")),
-				"target_cell": order.get("cell", current_cell),
+				"target_cell": order_cell,
 				"reservation_result": {},
 			})
 	if can_do_work("Haul"):
-		var item: Dictionary = world_state.get_available_haul_item(colonist_id)
-		if not item.is_empty():
+		for item: Dictionary in world_state.get_available_haul_items(colonist_id, JOB_CANDIDATE_LIMIT):
+			var item_cell: Vector2i = item.get("cell", current_cell)
+			var destination_cell: Vector2i = item.get("destination_cell", current_cell)
+			var pickup_path: Dictionary = _query_path(item_cell, false, false)
+			if not bool(pickup_path.get("reachable", false)):
+				continue
+			var deposit_path: Dictionary = ReachabilityQueryRef.find_path(chunk_manager, world_state, item_cell, destination_cell)
+			if not bool(deposit_path.get("reachable", false)):
+				continue
 			jobs.append({
 				"job_type": JOB_TYPE_HAUL,
 				"priority": get_work_priority("Haul"),
 				"target_id": String(item.get("item_id", "")),
-				"target_cell": item.get("cell", current_cell),
-				"destination_cell": item.get("destination_cell", current_cell),
+				"target_cell": item_cell,
+				"destination_cell": destination_cell,
 				"reservation_result": {},
 			})
 	return jobs
@@ -558,21 +583,29 @@ func start_job(job: Dictionary) -> bool:
 			if not can_do_work("Construct") or world_state.get_construction_reservation(target_id) != colonist_id:
 				_release_job_candidate_reservation(job, "construction_start_validation_failed")
 				return false
+			var construction_target: Vector2i = job.get("target_cell", current_cell)
+			var construction_path: Dictionary = _query_path(construction_target, true, false)
+			if not bool(construction_path.get("reachable", false)):
+				_release_job_candidate_reservation(job, "construction_path_unreachable")
+				return false
 			_construction_site_id = target_id
 			_construction_travel_elapsed = 0.0
-			target_cell = job.get("target_cell", current_cell)
-			_target_position = chunk_manager.get_cell_world_position(target_cell) + Vector2(0, -6)
+			_apply_path(construction_path, construction_target)
 			_activity = Activity.MOVING_TO_CONSTRUCTION
 			return true
 		JOB_TYPE_HARVEST:
 			if not can_do_work("Harvest") or world_state.get_harvest_order_reservation(target_id) != colonist_id:
 				_release_job_candidate_reservation(job, "harvest_start_validation_failed")
 				return false
+			var harvest_target: Vector2i = job.get("target_cell", current_cell)
+			var harvest_path: Dictionary = _query_path(harvest_target, false, true)
+			if not bool(harvest_path.get("reachable", false)):
+				_release_job_candidate_reservation(job, "harvest_path_unreachable")
+				return false
 			_harvest_order_id = target_id
 			_harvest_travel_elapsed = 0.0
 			_harvest_work_elapsed = 0.0
-			target_cell = job.get("target_cell", current_cell)
-			_target_position = chunk_manager.get_cell_world_position(target_cell) + Vector2(0, -6)
+			_apply_path(harvest_path, harvest_target)
 			_activity = Activity.MOVING_TO_HARVEST
 			return true
 		JOB_TYPE_HAUL:
@@ -580,12 +613,19 @@ func start_job(job: Dictionary) -> bool:
 			if not can_do_work("Haul") or String(haul_reservation.get("reserved_by_colonist_id", "")) != colonist_id:
 				_release_job_candidate_reservation(job, "haul_start_validation_failed")
 				return false
+			var haul_item: Dictionary = haul_reservation.get("item", {})
+			var pickup_cell: Vector2i = haul_item.get("cell", job.get("target_cell", current_cell))
+			var deposit_cell: Vector2i = haul_reservation.get("destination_cell", current_cell)
+			var pickup_path: Dictionary = _query_path(pickup_cell, false, false)
+			var deposit_path: Dictionary = ReachabilityQueryRef.find_path(chunk_manager, world_state, pickup_cell, deposit_cell)
+			if not bool(pickup_path.get("reachable", false)) or not bool(deposit_path.get("reachable", false)):
+				_release_job_candidate_reservation(job, "haul_path_unreachable")
+				return false
 			_haul_item_id = target_id
-			_haul_destination_cell = haul_reservation.get("destination_cell", current_cell)
+			_haul_destination_cell = deposit_cell
 			_haul_travel_elapsed = 0.0
 			_carried_item.clear()
-			target_cell = job.get("target_cell", current_cell)
-			_target_position = chunk_manager.get_cell_world_position(target_cell) + Vector2(0, -6)
+			_apply_path(pickup_path, pickup_cell)
 			_activity = Activity.MOVING_TO_HAUL_ITEM
 			return true
 	_release_job_candidate_reservation(job, "unsupported_job_type")
@@ -620,6 +660,30 @@ func _release_job_candidate_reservation(job: Dictionary, reason: String) -> void
 			world_state.release_harvest_order(target_id, colonist_id, reason)
 		JOB_TYPE_HAUL:
 			world_state.release_haul_item(target_id, colonist_id, reason)
+
+func _query_path(cell: Vector2i, allow_target_construction: bool = false, allow_target_resource: bool = false) -> Dictionary:
+	if chunk_manager == null or world_state == null:
+		return {"ok": false, "reachable": false, "path": [], "reason": "query_context_unavailable"}
+	return ReachabilityQueryRef.find_path(chunk_manager, world_state, current_cell, cell, {
+		"allow_target_construction": allow_target_construction,
+		"allow_target_resource": allow_target_resource,
+	})
+
+func _apply_path(path_result: Dictionary, final_cell: Vector2i) -> void:
+	_current_path.clear()
+	for cell_value: Variant in path_result.get("path", []):
+		if typeof(cell_value) == TYPE_VECTOR2I:
+			_current_path.append(cell_value)
+	_path_index = 0
+	target_cell = final_cell
+	if has_active_path():
+		_target_position = chunk_manager.get_cell_world_position(_current_path[_path_index]) + Vector2(0, -6)
+	else:
+		_target_position = global_position
+
+func _clear_path() -> void:
+	_current_path.clear()
+	_path_index = 0
 
 func _try_start_need_seeking() -> bool:
 	if world_state == null or not world_state.is_night():
@@ -670,6 +734,7 @@ func _consume_food_bite() -> bool:
 
 func _try_seek_warmth() -> bool:
 	if world_state.is_cell_warmed(current_cell):
+		_clear_path()
 		target_cell = current_cell
 		_target_position = global_position
 		_activity = Activity.SEEKING_WARMTH
@@ -677,11 +742,11 @@ func _try_seek_warmth() -> bool:
 	var target: Dictionary = world_state.get_nearest_warmed_cell(current_cell)
 	if not bool(target.get("ok", false)):
 		return false
-	_set_need_seeking_target(Activity.SEEKING_WARMTH, target.get("cell", current_cell))
-	return true
+	return _set_need_seeking_target(Activity.SEEKING_WARMTH, target.get("cell", current_cell))
 
 func _try_seek_shelter() -> bool:
 	if world_state.is_cell_sheltered(current_cell):
+		_clear_path()
 		target_cell = current_cell
 		_target_position = global_position
 		_activity = Activity.SEEKING_SHELTER
@@ -689,13 +754,15 @@ func _try_seek_shelter() -> bool:
 	var target: Dictionary = world_state.get_nearest_sheltered_cell(current_cell)
 	if not bool(target.get("ok", false)):
 		return false
-	_set_need_seeking_target(Activity.SEEKING_SHELTER, target.get("cell", current_cell))
-	return true
+	return _set_need_seeking_target(Activity.SEEKING_SHELTER, target.get("cell", current_cell))
 
-func _set_need_seeking_target(activity: Activity, cell: Vector2i) -> void:
-	target_cell = cell
-	_target_position = chunk_manager.get_cell_world_position(cell) + Vector2(0, -6)
+func _set_need_seeking_target(activity: Activity, cell: Vector2i) -> bool:
+	var path_result: Dictionary = _query_path(cell)
+	if not bool(path_result.get("reachable", false)):
+		return false
+	_apply_path(path_result, cell)
 	_activity = activity
+	return true
 
 func _process_need_seeking(delta: float) -> void:
 	if world_state == null or not world_state.is_night():
@@ -742,36 +809,71 @@ func _move_towards_target(delta: float) -> void:
 		if String(haul_reservation.get("reserved_by_colonist_id", "")) != colonist_id:
 			_finish_haul_job("haul_reservation_lost")
 			return
-	var offset: Vector2 = _target_position - global_position
-	if offset.length() <= move_speed * delta:
-		global_position = _target_position
-		current_cell = target_cell
-		if _activity == Activity.MOVING_TO_CONSTRUCTION:
-			var site: Dictionary = world_state.get_construction_site(_construction_site_id) if world_state != null else {}
-			if site.is_empty() or bool(site.get("completed", false)):
-				_finish_construction_job("site_invalid")
-			else:
-				_activity = Activity.CONSTRUCTING
-		elif _activity == Activity.MOVING_TO_HARVEST:
-			var order: Dictionary = world_state.get_harvest_order(_harvest_order_id) if world_state != null else {}
-			if order.is_empty():
-				_finish_harvest_job("order_invalid")
-			else:
-				_harvest_work_elapsed = 0.0
-				_activity = Activity.HARVESTING
-		elif _activity == Activity.MOVING_TO_HAUL_ITEM:
-			var pickup: Dictionary = world_state.request_pickup_ground_item(_haul_item_id, colonist_id)
-			if not bool(pickup.get("ok", false)):
-				_finish_haul_job("pickup_%s" % String(pickup.get("reason", "failed")))
-			else:
-				_carried_item = pickup.get("item", {}).duplicate(true)
-				_activity = Activity.CARRYING_ITEM
-		elif _activity == Activity.MOVING_TO_STOCKPILE:
-			_activity = Activity.DEPOSITING
-		elif _activity == Activity.WANDERING:
-			_enter_idle()
+	if not has_active_path():
+		_complete_path_arrival()
 		return
-	global_position += offset.normalized() * move_speed * delta
+	var next_cell: Vector2i = _current_path[_path_index]
+	var options: Dictionary = _get_current_path_options()
+	if not ReachabilityQueryRef.is_cell_traversable(chunk_manager, world_state, next_cell, current_cell, target_cell, options):
+		_fail_current_movement("path_became_blocked")
+		return
+	_target_position = chunk_manager.get_cell_world_position(next_cell) + Vector2(0, -6)
+	var offset: Vector2 = _target_position - global_position
+	if offset.length() > move_speed * delta:
+		global_position += offset.normalized() * move_speed * delta
+		return
+	global_position = _target_position
+	current_cell = next_cell
+	_path_index += 1
+	if has_active_path():
+		_target_position = chunk_manager.get_cell_world_position(_current_path[_path_index]) + Vector2(0, -6)
+		return
+	_complete_path_arrival()
+
+func _get_current_path_options() -> Dictionary:
+	return {
+		"allow_target_construction": _activity == Activity.MOVING_TO_CONSTRUCTION,
+		"allow_target_resource": _activity == Activity.MOVING_TO_HARVEST,
+	}
+
+func _fail_current_movement(reason: String) -> void:
+	match _activity:
+		Activity.MOVING_TO_CONSTRUCTION:
+			_finish_construction_job(reason)
+		Activity.MOVING_TO_HARVEST:
+			_finish_harvest_job(reason)
+		Activity.MOVING_TO_HAUL_ITEM, Activity.MOVING_TO_STOCKPILE:
+			_finish_haul_job(reason)
+		_:
+			_enter_idle()
+
+func _complete_path_arrival() -> void:
+	_clear_path()
+	current_cell = target_cell
+	if _activity == Activity.MOVING_TO_CONSTRUCTION:
+		var site: Dictionary = world_state.get_construction_site(_construction_site_id) if world_state != null else {}
+		if site.is_empty() or bool(site.get("completed", false)):
+			_finish_construction_job("site_invalid")
+		else:
+			_activity = Activity.CONSTRUCTING
+	elif _activity == Activity.MOVING_TO_HARVEST:
+		var order: Dictionary = world_state.get_harvest_order(_harvest_order_id) if world_state != null else {}
+		if order.is_empty():
+			_finish_harvest_job("order_invalid")
+		else:
+			_harvest_work_elapsed = 0.0
+			_activity = Activity.HARVESTING
+	elif _activity == Activity.MOVING_TO_HAUL_ITEM:
+		var pickup: Dictionary = world_state.request_pickup_ground_item(_haul_item_id, colonist_id)
+		if not bool(pickup.get("ok", false)):
+			_finish_haul_job("pickup_%s" % String(pickup.get("reason", "failed")))
+		else:
+			_carried_item = pickup.get("item", {}).duplicate(true)
+			_activity = Activity.CARRYING_ITEM
+	elif _activity == Activity.MOVING_TO_STOCKPILE:
+		_activity = Activity.DEPOSITING
+	elif _activity == Activity.WANDERING:
+		_enter_idle()
 
 func _process_construction(delta: float) -> void:
 	if world_state == null or _construction_site_id.is_empty():
@@ -806,8 +908,11 @@ func _process_hauling() -> void:
 		if _carried_item.is_empty():
 			_finish_haul_job("missing_carried_item")
 			return
-		target_cell = _haul_destination_cell
-		_target_position = chunk_manager.get_cell_world_position(target_cell) + Vector2(0, -6)
+		var deposit_path: Dictionary = _query_path(_haul_destination_cell)
+		if not bool(deposit_path.get("reachable", false)):
+			_finish_haul_job("stockpile_path_unreachable")
+			return
+		_apply_path(deposit_path, _haul_destination_cell)
 		_haul_travel_elapsed = 0.0
 		_activity = Activity.MOVING_TO_STOCKPILE
 		return
@@ -816,9 +921,15 @@ func _process_hauling() -> void:
 		_finish_haul_job("haul_deposited" if bool(result.get("ok", false)) else "deposit_%s" % String(result.get("reason", "failed")), bool(result.get("ok", false)))
 
 func _pick_new_wander_target() -> void:
-	target_cell = chunk_manager.get_random_walkable_cell_near(current_cell, wander_radius, 48)
-	_target_position = chunk_manager.get_cell_world_position(target_cell) + Vector2(0, -6)
-	_activity = Activity.WANDERING
+	for _attempt in range(12):
+		var candidate: Vector2i = chunk_manager.get_random_walkable_cell_near(current_cell, wander_radius, 48)
+		var path_result: Dictionary = _query_path(candidate)
+		if not bool(path_result.get("reachable", false)):
+			continue
+		_apply_path(path_result, candidate)
+		_activity = Activity.WANDERING
+		return
+	_enter_idle()
 
 func _finish_construction_job(reason: String = "construction_abandoned") -> void:
 	if world_state != null and not _construction_site_id.is_empty():
@@ -850,5 +961,8 @@ func _finish_haul_job(reason: String = "haul_abandoned", deposited: bool = false
 	_enter_idle()
 
 func _enter_idle() -> void:
+	_clear_path()
+	target_cell = current_cell
+	_target_position = global_position
 	_activity = Activity.IDLE
 	_pause_timer = _rng.randf_range(pause_duration_min, pause_duration_max)
