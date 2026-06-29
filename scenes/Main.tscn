@@ -10,6 +10,7 @@
 [ext_resource type="Script" uid="uid://cabx2m5kqxwcm" path="res://scripts/ui/selected_tile_panel.gd" id="12_selected_tile_panel"]
 [ext_resource type="Script" path="res://scripts/ui/colonist_info_panel.gd" id="13_colonist_info_panel"]
 [ext_resource type="Script" path="res://scripts/ui/bottom_toolbar.gd" id="14_bottom_toolbar"]
+[ext_resource type="Script" path="res://scripts/ui/work_priority_table.gd" id="15_work_priority_table"]
 
 [node name="Main" type="Node2D" unique_id=1855439718]
 script = ExtResource("1_main_script")
@@ -145,15 +146,63 @@ layout_mode = 2
 alignment = 1
 theme_override_constants/separation = 8
 
+[node name="WorkPriorityPanel" type="PanelContainer" parent="CanvasLayer"]
+visible = false
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 24.0
+offset_top = -500.0
+offset_right = -24.0
+offset_bottom = -94.0
+grow_horizontal = 2
+grow_vertical = 0
+script = ExtResource("15_work_priority_table")
+
+[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/WorkPriorityPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 8
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/WorkPriorityPanel/MarginContainer"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="TitleLabel" type="Label" parent="CanvasLayer/WorkPriorityPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Work Priorities"
+horizontal_alignment = 1
+
+[node name="HintLabel" type="Label" parent="CanvasLayer/WorkPriorityPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Click a cell to cycle: - → 1 → 2 → 3 → 4"
+horizontal_alignment = 1
+
+[node name="TableScroll" type="ScrollContainer" parent="CanvasLayer/WorkPriorityPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 2
+vertical_scroll_mode = 2
+
+[node name="TableGrid" type="GridContainer" parent="CanvasLayer/WorkPriorityPanel/MarginContainer/VBoxContainer/TableScroll"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/h_separation = 4
+theme_override_constants/v_separation = 3
+columns = 11
+
 [node name="BottomToolbar" type="PanelContainer" parent="CanvasLayer"]
 anchors_preset = 7
 anchor_left = 0.5
 anchor_top = 1.0
 anchor_right = 0.5
 anchor_bottom = 1.0
-offset_left = -360.0
+offset_left = -420.0
 offset_top = -86.0
-offset_right = 360.0
+offset_right = 420.0
 offset_bottom = -12.0
 grow_horizontal = 2
 grow_vertical = 0
@@ -181,13 +230,19 @@ alignment = 1
 theme_override_constants/separation = 6
 
 [node name="ArchitectButton" type="Button" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer/ToolbarButtons"]
-custom_minimum_size = Vector2(150, 36)
+custom_minimum_size = Vector2(140, 36)
 layout_mode = 2
 toggle_mode = true
 text = "Architect  [B]"
 
+[node name="WorkButton" type="Button" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer/ToolbarButtons"]
+custom_minimum_size = Vector2(140, 36)
+layout_mode = 2
+toggle_mode = true
+text = "Work"
+
 [node name="HarvestButton" type="Button" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer/ToolbarButtons"]
-custom_minimum_size = Vector2(150, 36)
+custom_minimum_size = Vector2(130, 36)
 layout_mode = 2
 text = "Harvest  [H]"
 
@@ -197,19 +252,20 @@ layout_mode = 2
 text = "Stockpile Zone  [Z]"
 
 [node name="CancelButton" type="Button" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer/ToolbarButtons"]
-custom_minimum_size = Vector2(150, 36)
+custom_minimum_size = Vector2(120, 36)
 layout_mode = 2
 disabled = true
 text = "Cancel  [Esc]"
 
 [node name="ColonistInfoPanel" type="PanelContainer" parent="CanvasLayer"]
-anchors_preset = 2
-anchor_top = 1.0
+anchors_preset = 15
+anchor_right = 0.0
 anchor_bottom = 1.0
 offset_left = 12.0
-offset_top = -620.0
-offset_right = 310.0
-offset_bottom = -12.0
+offset_top = 12.0
+offset_right = 360.0
+offset_bottom = -94.0
+grow_horizontal = 0
 grow_vertical = 0
 script = ExtResource("13_colonist_info_panel")
 
@@ -222,57 +278,146 @@ theme_override_constants/margin_bottom = 8
 
 [node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/ColonistInfoPanel/MarginContainer"]
 layout_mode = 2
+theme_override_constants/separation = 8
 
-[node name="NameLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+[node name="IdentityPanel" type="PanelContainer" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
 layout_mode = 2
+
+[node name="IdentityMargin" type="MarginContainer" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/IdentityPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 6
+
+[node name="IdentityVBox" type="VBoxContainer" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/IdentityPanel/IdentityMargin"]
+layout_mode = 2
+
+[node name="NameLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/IdentityPanel/IdentityMargin/IdentityVBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
 text = "First Last"
 
-[node name="NicknameLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+[node name="IdentityMetaLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/IdentityPanel/IdentityMargin/IdentityVBox"]
 layout_mode = 2
-text = "Nickname: Example"
+theme_override_colors/font_color = Color(0.72, 0.72, 0.72, 1)
+text = "Nickname: Example\nID: colonist_0001"
+autowrap_mode = 2
 
-[node name="ActivityLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+[node name="ActivityLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/IdentityPanel/IdentityMargin/IdentityVBox"]
 layout_mode = 2
 text = "Activity: Idle"
 
-[node name="NeedsLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+[node name="ContentScroll" type="ScrollContainer" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
 layout_mode = 2
-text = "Rest: 100\nWarmth: 100\nShelter: 100\nHunger: 100"
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+vertical_scroll_mode = 2
 
-[node name="RelationshipsLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+[node name="Sections" type="VBoxContainer" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll"]
 layout_mode = 2
-text = "Relationships:\nPartner: Jane Smith"
+size_flags_horizontal = 3
+theme_override_constants/separation = 6
+
+[node name="NeedsHeader" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "Needs"
+
+[node name="NeedsGrid" type="GridContainer" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
+layout_mode = 2
+columns = 2
+
+[node name="RestLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections/NeedsGrid"]
+layout_mode = 2
+text = "Rest"
+
+[node name="RestValue" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections/NeedsGrid"]
+layout_mode = 2
+text = "100"
+horizontal_alignment = 2
+
+[node name="WarmthLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections/NeedsGrid"]
+layout_mode = 2
+text = "Warmth"
+
+[node name="WarmthValue" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections/NeedsGrid"]
+layout_mode = 2
+text = "100"
+horizontal_alignment = 2
+
+[node name="ShelterLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections/NeedsGrid"]
+layout_mode = 2
+text = "Shelter"
+
+[node name="ShelterValue" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections/NeedsGrid"]
+layout_mode = 2
+text = "100"
+horizontal_alignment = 2
+
+[node name="HungerLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections/NeedsGrid"]
+layout_mode = 2
+text = "Hunger"
+
+[node name="HungerValue" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections/NeedsGrid"]
+layout_mode = 2
+text = "100"
+horizontal_alignment = 2
+
+[node name="NeedsSeparator" type="HSeparator" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
+layout_mode = 2
+
+[node name="TraitsHeader" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "Traits"
+
+[node name="TraitsLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
+layout_mode = 2
+text = "None"
 autowrap_mode = 2
 
-[node name="TraitsLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+[node name="TraitsSeparator" type="HSeparator" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
 layout_mode = 2
-text = "Traits: Hard Worker, Kind"
+
+[node name="RelationshipsHeader" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "Relationships"
+
+[node name="RelationshipsLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
+layout_mode = 2
+text = "None"
 autowrap_mode = 2
 
-[node name="WorkPrioritiesLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+[node name="RelationshipsSeparator" type="HSeparator" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
+layout_mode = 2
+
+[node name="SkillsHeader" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "Skills"
+
+[node name="SkillsLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
-text = "Work Priorities (1 highest, - disabled):\nConstruct 2    Harvest 2\nHaul -    Mine -\nFarm -    Cook -\nCraft -    Doctor -\nResearch -    Guard -"
+text = "Construction 8 ++\nMining 3\nPlants 6 +"
 
-[node name="WorkPriorityButtons" type="HBoxContainer" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+[node name="SkillsSeparator" type="HSeparator" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
 layout_mode = 2
 
-[node name="ConstructPriorityButton" type="Button" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/WorkPriorityButtons"]
+[node name="WorkHeader" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
 layout_mode = 2
-text = "Construct: 2"
-tooltip_text = "Cycle Construct priority: disabled, 1 (highest), 2, 3, 4"
+theme_override_font_sizes/font_size = 16
+text = "Work"
 
-[node name="HarvestPriorityButton" type="Button" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/WorkPriorityButtons"]
+[node name="WorkHint" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
 layout_mode = 2
-text = "Harvest: 2"
-tooltip_text = "Cycle Harvest priority: disabled, 1 (highest), 2, 3, 4"
+theme_override_colors/font_color = Color(0.72, 0.72, 0.72, 1)
+theme_override_font_sizes/font_size = 11
+text = "Edit priorities from the Work tab"
 
-[node name="HaulPriorityButton" type="Button" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/WorkPriorityButtons"]
-layout_mode = 2
-text = "Haul: -"
-tooltip_text = "Cycle Haul priority: disabled, 1 (highest), 2, 3, 4"
-
-[node name="SkillsLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer"]
+[node name="WorkPrioritiesLabel" type="Label" parent="CanvasLayer/ColonistInfoPanel/MarginContainer/VBoxContainer/ContentScroll/Sections"]
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
-text = "Skills:\nConstruction 8 ++\nMining 3\nPlants 6 +\nCooking 2\nCrafting 4\nAnimals 1\nMedicine 5\nResearch 7\nShooting 3\nMelee 2\nSocial 4"
+text = "Construct 2    Harvest 2\nHaul -    Mine -"

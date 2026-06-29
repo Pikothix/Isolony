@@ -17,6 +17,7 @@ const AREA_DRAG_THRESHOLD_PIXELS := 6.0
 @onready var _selected_tile_panel: SelectedTilePanel = $CanvasLayer/SelectedTilePanel
 @onready var _colonist_info_panel: PanelContainer = $CanvasLayer/ColonistInfoPanel
 @onready var _bottom_toolbar: PanelContainer = $CanvasLayer/BottomToolbar
+@onready var _work_priority_table: PanelContainer = $CanvasLayer/WorkPriorityPanel
 @onready var _colonist_manager: ColonistManager = $ChunkManager/GameplayYSort/ColonistManager
 
 var _world_state
@@ -52,6 +53,7 @@ func _ready() -> void:
 	_world_state.set_placement_query(_chunk_manager)
 	_chunk_manager.set_world_state(_world_state)
 	_colonist_manager.set_world_state(_world_state)
+	_work_priority_table.setup(_colonist_manager)
 	_colonist_manager.population_replaced.connect(_on_colonist_population_replaced)
 	_bottom_toolbar.building_requested.connect(_on_building_requested)
 	_bottom_toolbar.harvest_mode_requested.connect(_on_harvest_mode_requested)

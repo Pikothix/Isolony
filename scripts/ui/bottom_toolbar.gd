@@ -1,9 +1,9 @@
 extends PanelContainer
 class_name BottomToolbar
 
-## Purpose: Present the bottom control toolbar and data-driven Architect building submenu.
+## Purpose: Present the bottom control toolbar plus mutually exclusive Architect and Work panels.
 ## Responsibility: Emit player intent and project Main-owned control mode; never mutate simulation state.
-## Assumption: Architect menu visibility, selected tab, and generated buttons are transient and unsaved.
+## Assumption: Architect/Work visibility, selected tab, and generated buttons are transient and unsaved.
 
 const BuildingDefinitionRef = preload("res://scripts/buildings/building_definition.gd")
 
@@ -13,11 +13,13 @@ signal stockpile_mode_requested
 signal cancel_mode_requested
 
 @onready var _architect_button: Button = $MarginContainer/VBoxContainer/ToolbarButtons/ArchitectButton
+@onready var _work_button: Button = $MarginContainer/VBoxContainer/ToolbarButtons/WorkButton
 @onready var _harvest_button: Button = $MarginContainer/VBoxContainer/ToolbarButtons/HarvestButton
 @onready var _stockpile_button: Button = $MarginContainer/VBoxContainer/ToolbarButtons/StockpileButton
 @onready var _cancel_button: Button = $MarginContainer/VBoxContainer/ToolbarButtons/CancelButton
 @onready var _mode_label: Label = $MarginContainer/VBoxContainer/ModeLabel
 @onready var _architect_menu: PanelContainer = $"../ArchitectMenu"
+@onready var _work_panel: PanelContainer = $"../WorkPriorityPanel"
 @onready var _building_buttons: HBoxContainer = $"../ArchitectMenu/MarginContainer/VBoxContainer/BuildingButtons"
 
 var _buttons_by_building_id: Dictionary = {}
@@ -26,26 +28,44 @@ var _buttons_by_building_id: Dictionary = {}
 func _ready() -> void:
 	_rebuild_building_buttons()
 	_architect_button.pressed.connect(_on_architect_pressed)
+	_work_button.pressed.connect(_on_work_pressed)
 	_harvest_button.pressed.connect(_on_harvest_pressed)
 	_stockpile_button.pressed.connect(_on_stockpile_pressed)
 	_cancel_button.pressed.connect(_on_cancel_pressed)
 	set_architect_menu_open(false)
+	set_work_panel_open(false)
 
 
 func set_mode(mode_text: String, can_cancel: bool) -> void:
 	_mode_label.text = "Mode: %s" % mode_text
 	_cancel_button.disabled = not can_cancel
 	if not can_cancel and mode_text == "Normal Selection":
-		set_architect_menu_open(false)
+		close_submenus()
 
 
 func set_architect_menu_open(open: bool) -> void:
-	_architect_menu.visible = open
-	_architect_button.button_pressed = open
+	_set_architect_menu_visible(open)
+	if open:
+		_set_work_panel_visible(false)
 
 
 func is_architect_menu_open() -> bool:
 	return _architect_menu.visible
+
+
+func set_work_panel_open(open: bool) -> void:
+	_set_work_panel_visible(open)
+	if open:
+		_set_architect_menu_visible(false)
+
+
+func is_work_panel_open() -> bool:
+	return _work_panel.visible
+
+
+func close_submenus() -> void:
+	_set_architect_menu_visible(false)
+	_set_work_panel_visible(false)
 
 
 func get_building_button_ids() -> Array[String]:
@@ -64,18 +84,22 @@ func _on_architect_pressed() -> void:
 	set_architect_menu_open(_architect_button.button_pressed)
 
 
+func _on_work_pressed() -> void:
+	set_work_panel_open(_work_button.button_pressed)
+
+
 func _on_harvest_pressed() -> void:
-	set_architect_menu_open(false)
+	close_submenus()
 	harvest_mode_requested.emit()
 
 
 func _on_stockpile_pressed() -> void:
-	set_architect_menu_open(false)
+	close_submenus()
 	stockpile_mode_requested.emit()
 
 
 func _on_cancel_pressed() -> void:
-	set_architect_menu_open(false)
+	close_submenus()
 	cancel_mode_requested.emit()
 
 
@@ -83,8 +107,18 @@ func _on_building_pressed(building_id: String) -> void:
 	if not BuildingDefinitionRef.has_definition(building_id):
 		push_warning("Architect menu ignored unknown building '%s'." % building_id)
 		return
-	set_architect_menu_open(false)
+	close_submenus()
 	building_requested.emit(building_id)
+
+
+func _set_architect_menu_visible(visible: bool) -> void:
+	_architect_menu.visible = visible
+	_architect_button.button_pressed = visible
+
+
+func _set_work_panel_visible(visible: bool) -> void:
+	_work_panel.visible = visible
+	_work_button.button_pressed = visible
 
 
 func _rebuild_building_buttons() -> void:
