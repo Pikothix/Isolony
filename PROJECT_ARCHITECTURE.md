@@ -20,7 +20,7 @@ This document is a concise map of the current Godot colony sim prototype. It dis
 ## Scene And Node Ownership
 
 - `Main` (`scripts/main.gd`): scene coordination, dependency injection, resource/time UI, transient control/area-drag ownership, colonist selection, and construction/harvest/zone request routing.
-- `WorldState` (`scripts/simulation/world_state.gd`): authoritative construction/harvest orders, stockpile zones, and ground items; bounded deterministic availability snapshots; effect queries; completed-Storehouse capacity derivation; and validated stockpile requests.
+- `WorldState` (`scripts/simulation/world_state.gd`): authoritative construction/storage components/harvest orders, stockpile zones, and ground items; bounded deterministic availability snapshots; effect queries; completed-Storehouse capacity derivation; and validated stockpile requests.
 - `ResourceStockpile` (`scripts/simulation/resource_stockpile.gd`): authoritative abstract stored totals/shared capacity, construction resource earmarks, generic capacity reservation support, atomic mutations, and notifications.
 - `TimeState` (`scripts/simulation/time_state.gd`): authoritative runtime clock, day/night phase, clock-only pause/scale controls, and time/phase notifications. Colonist movement, work, and needs continue from their own process delta.
 - `SaveGameService` (`scripts/simulation/save_game_service.gd`): non-autoload version `2` coordinator for world/chunk/colonist export and ordered import, currently used only by debug or validation code.
@@ -166,6 +166,15 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 5. A valid request creates the authoritative incomplete site record and occupied-cell index in `WorldState`.
 6. `ChunkManager` receives the site signal and spawns a placeholder under `ConstructionRoot` only if its origin chunk is loaded.
 7. Chunk unload deletes the placeholder node only. Chunk reload reads current `WorldState` records and recreates the visual.
+
+## Storehouse Storage Component Flow
+
+1. `WorldState` derives preparatory storage component records from completed Storehouse construction records.
+2. Each component is linked to one placed building instance by construction site id, building id, origin cell, occupied cells, and definition storage capacity.
+3. Incomplete Storehouses and non-storage buildings do not produce components.
+4. Component contents remain empty in this milestone. Hauling, construction, eating, aggregate resource totals, and the resource UI continue to use `ResourceStockpile`.
+5. Components are rebuilt when construction completion or construction import refreshes storage capacity. They are not saved as separate version-2 data; completed construction records remain the persistence source.
+6. Public component APIs return defensive snapshots only. UI and rendering own no component state.
 
 ## Construction Completion Flow
 

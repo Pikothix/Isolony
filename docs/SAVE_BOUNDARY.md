@@ -66,6 +66,7 @@ This boundary exists so future Codex tasks do not accidentally persist rendered 
 - Procedural sprite textures or `ProcSpriteCache` contents.
 - Staged resource spawn queues such as `_pending_resource_spawns`.
 - Loaded chunk dictionaries that only mirror the active streaming window.
+- Derived Storehouse storage component records. In the current milestone they are rebuilt from completed construction records and have empty contents; they are not gameplay storage authority or independent save data.
 - UI selected tile state.
 - UI labels or panel contents.
 - Camera position, unless later treated as a user preference rather than simulation state.
@@ -145,6 +146,8 @@ Cancelling an incomplete site removes its authoritative record, so it is absent 
 Completed-building effect state is not serialized separately. Campfire light/warmth and Cabin shelter radius/capacity/tags come from `BuildingDefinition`, while source position/existence comes from saved completed construction records. Loading or chunk streaming reconstructs visual indicators and authoritative coverage queries from those inputs. Future fuel, room state, occupancy, or dynamic effect state would require an explicit save-boundary change.
 
 Storehouse capacity is also not serialized separately. `ResourceStockpile` provides base capacity 100, while `WorldState` adds `storage_capacity` metadata from saved completed Storehouse records after construction import. Saved stockpile totals import unchanged even if they exceed the re-derived limit; new additions are rejected until capacity is available.
+
+Preparatory Storehouse storage component records are not serialized separately in version `2`. `WorldState` rebuilds empty read-only components from completed Storehouse construction records whenever construction state is imported or a Storehouse completes. Current hauling, construction, eating, aggregate resource totals, and UI counters remain backed by `ResourceStockpile`, not by component contents.
 
 Construction resource earmarks, harvest/haul workers, haul storage-capacity reservations, carried-item state, transient job candidates, and colonist cell paths/path indices are deliberately excluded from version `2` saves. Harvest creates no capacity reservation; Haul creates one transient reservation per claimed item. `ResourceStockpile.import_state()` clears reservations, WorldState restores orders/items without workers, and `Colonist.import_state()` resets all work/movement targets and path state to idle. Restored colonists rediscover work and recompute reachability from the loaded world. None of these paths refund resources already consumed into saved construction progress.
 

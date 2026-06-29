@@ -34,6 +34,7 @@ var _placement_query: Node
 var _construction_sites: Dictionary = {}
 var _occupied_construction_cells: Dictionary = {}
 var _construction_reservations: Dictionary = {}
+var _storage_components: Dictionary = {}
 var _harvest_orders: Dictionary = {}
 var _harvest_order_by_resource: Dictionary = {}
 var _stockpile_zones: Dictionary = {}
@@ -44,7 +45,7 @@ var _next_ground_item_id: int = 1
 var _haul_reservations: Dictionary = {}
 
 ## Purpose: Minimal simulation-owned root for authoritative runtime state.
-## Responsibility: Own resource/time/construction/harvest-order/stockpile-zone/ground-item state and coordinate authoritative cross-owner mutations.
+## Responsibility: Own resource/time/construction/storage-component/harvest-order/stockpile-zone/ground-item state and coordinate authoritative cross-owner mutations.
 ## Assumption: ChunkManager supplies read-only loaded terrain/resource queries and renders reconstructible projections.
 func _ready() -> void:
 	_resource_stockpile = ResourceStockpileScript.new()
@@ -486,6 +487,35 @@ func get_construction_sites() -> Array[Dictionary]:
 	for site: Variant in _construction_sites.values():
 		sites.append((site as Dictionary).duplicate(true))
 	return sites
+
+func get_storage_components() -> Array[Dictionary]:
+	## Preparatory building-owned storage records. Gameplay still uses ResourceStockpile in R02B.
+	var components: Array[Dictionary] = []
+	var storage_ids: Array[String] = []
+	for storage_id_value: Variant in _storage_components.keys():
+		storage_ids.append(String(storage_id_value))
+	storage_ids.sort()
+	for storage_id: String in storage_ids:
+		components.append(_copy_storage_component(_storage_components[storage_id]))
+	return components
+
+func get_storage_component(storage_id: String) -> Dictionary:
+	if not _storage_components.has(storage_id):
+		return {}
+	return _copy_storage_component(_storage_components[storage_id])
+
+func get_storage_components_for_building(building_id: String) -> Array[Dictionary]:
+	var components: Array[Dictionary] = []
+	for component: Dictionary in get_storage_components():
+		if String(component.get("building_id", "")) == building_id:
+			components.append(component)
+	return components
+
+func get_total_storage_component_capacity() -> int:
+	var capacity: int = 0
+	for component: Variant in _storage_components.values():
+		capacity += int((component as Dictionary).get("capacity", 0))
+	return capacity
 
 func request_create_stockpile_zone(cells: Array) -> Dictionary:
 	## Validate the complete request before assigning an id or mutating authoritative zone state.
@@ -1430,6 +1460,7 @@ func _refresh_storage_capacity() -> void:
 	if _resource_stockpile == null:
 		return
 	var capacity: int = ResourceStockpileScript.BASE_STORAGE_CAPACITY
+	_rebuild_storage_components()
 	for site: Variant in _construction_sites.values():
 		var site_data: Dictionary = site
 		if not bool(site_data.get("completed", false)):
@@ -1437,6 +1468,42 @@ func _refresh_storage_capacity() -> void:
 		var definition: Dictionary = BuildingDefinitionRef.get_definition(String(site_data.get("building_id", "")))
 		capacity += maxi(int(definition.get("storage_capacity", 0)), 0)
 	_resource_stockpile.set_storage_capacity(capacity)
+
+func _rebuild_storage_components() -> void:
+	var rebuilt: Dictionary = {}
+	for site_value: Variant in _construction_sites.values():
+		var site: Dictionary = site_value
+		if not bool(site.get("completed", false)):
+			continue
+		var definition: Dictionary = BuildingDefinitionRef.get_definition(String(site.get("building_id", "")))
+		var capacity: int = maxi(int(definition.get("storage_capacity", 0)), 0)
+		if capacity <= 0:
+			continue
+		var storage_id: String = _build_storage_component_id(String(site.get("site_id", "")))
+		rebuilt[storage_id] = {
+			"storage_id": storage_id,
+			"construction_site_id": String(site.get("site_id", "")),
+			"building_id": String(site.get("building_id", "")),
+			"origin_cell": site.get("origin_cell", Vector2i.ZERO),
+			"occupied_cells": site.get("occupied_cells", []).duplicate(),
+			"capacity": capacity,
+			"contents": {},
+		}
+	_storage_components = rebuilt
+
+func _copy_storage_component(component: Dictionary) -> Dictionary:
+	return {
+		"storage_id": String(component.get("storage_id", "")),
+		"construction_site_id": String(component.get("construction_site_id", "")),
+		"building_id": String(component.get("building_id", "")),
+		"origin_cell": component.get("origin_cell", Vector2i.ZERO),
+		"occupied_cells": component.get("occupied_cells", []).duplicate(),
+		"capacity": int(component.get("capacity", 0)),
+		"contents": component.get("contents", {}).duplicate(true),
+	}
+
+func _build_storage_component_id(site_id: String) -> String:
+	return "storage_%s" % site_id
 
 func _on_time_changed(day: int, hour: int, minute: int) -> void:
 	time_changed.emit(day, hour, minute)

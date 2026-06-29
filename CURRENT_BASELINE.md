@@ -48,7 +48,7 @@ Scene-level values currently override some script defaults, including:
 ## Current System Ownership
 
 - `scripts/main.gd`: scene coordination, dependency injection, resource/time UI, transient Normal/Build/Harvest/Stockpile mode ownership, colonist selection, and request routing.
-- `scripts/simulation/world_state.gd`: authoritative construction/harvest-order/stockpile-zone/ground-item lifecycle, bounded deterministic availability snapshots, completed-building effects/storage-capacity derivation, and validated stockpile coordination.
+- `scripts/simulation/world_state.gd`: authoritative construction/storage-component/harvest-order/stockpile-zone/ground-item lifecycle, bounded deterministic availability snapshots, completed-building effects/storage-capacity derivation, and validated stockpile coordination.
 - `scripts/simulation/time_state.gd`: clock time, day/night phase, clock labels, clock scaling, clock pause state, and time/phase signals. Its pause/scale values do not pause or scale all colonist simulation.
 - `scripts/simulation/resource_stockpile.gd`: abstract stored totals/capacity, construction resource earmarks, haul storage-capacity reservations, atomic mutations, and notifications.
 - `scripts/world/world_generator.gd`: deterministic noise setup, climate sampling, elevation classification, terrain classification, tile info creation, walkability lookup, chunk data generation, and resource spawn planning calls.
@@ -249,9 +249,11 @@ No authoritative construction, resource, colonist, stockpile, need, depletion, o
 
 Incomplete Storehouses draw a footprint scaffold. Completed Storehouses draw a simple warehouse placeholder. Visuals are projections only; `WorldState` derives capacity by summing the base 100 plus `storage_capacity` metadata from every completed authoritative Storehouse record. Chunk unload therefore cannot affect capacity.
 
+`WorldState` also derives one preparatory storage component record for each completed Storehouse. Each component is linked to the completed construction site id, building id, origin, occupied cells, and definition capacity, with empty contents in the current milestone. These records are read-only snapshots for future building-owned storage work; hauling, construction, eating, and the resource UI still use `ResourceStockpile` as the active gameplay storage authority.
+
 `ResourceStockpile` owns stored totals, the current shared limit, construction earmarks, and haul-deposit capacity reservations. Harvest itself reserves no capacity because output remains physical; Haul reserves the full item amount when claiming work. The resource panel displays stored/capacity values; reserved haul capacity and ground items are excluded from the stored count.
 
-Version `2` saves no derived capacity field. Completed Storehouse construction records persist normally and capacity is re-derived after load. Stockpile import accepts saved over-capacity totals without deleting them; later additions remain rejected until spending or more Storehouses creates room.
+Version `2` saves no derived capacity or storage-component field. Completed Storehouse construction records persist normally, and capacity plus empty storage components are re-derived after load. Stockpile import accepts saved over-capacity totals without deleting them; later additions remain rejected until spending or more Storehouses creates room.
 
 ## Colonist Construction Work
 
