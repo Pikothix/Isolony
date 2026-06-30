@@ -27,7 +27,7 @@ This boundary exists so future Codex tasks do not accidentally persist rendered 
   - resource kind/type where needed for migration or validation
   - this should be saved as a depletion delta against regenerated base spawns, not as rendered node state
   - Berry Bush ids use `berry_bush:x:y` and follow the same no-regrowth depletion rule as trees and rocks
-- Player-authored stockpile zones:
+- Legacy stockpile zones:
   - stable `zone_id`
   - explicit member cells
   - enabled state and optional label
@@ -53,6 +53,7 @@ This boundary exists so future Codex tasks do not accidentally persist rendered 
   - occupied cells
   - required and consumed resources
   - construction progress, build time, completion, and whether resources were consumed
+  - additive Storehouse storage contents for completed storage buildings
   - worker reservations remain transient and are excluded
 - `TimeState` clock state:
   - current day and minutes
@@ -66,7 +67,7 @@ This boundary exists so future Codex tasks do not accidentally persist rendered 
 - Procedural sprite textures or `ProcSpriteCache` contents.
 - Staged resource spawn queues such as `_pending_resource_spawns`.
 - Loaded chunk dictionaries that only mirror the active streaming window.
-- Derived Storehouse storage component records. In the current milestone they are rebuilt from completed construction records and have empty contents; they are not gameplay storage authority or independent save data.
+- Derived Storehouse storage component records as a separate top-level section. Components are rebuilt from completed construction records; their persisted contents live on those construction records.
 - UI selected tile state.
 - UI labels or panel contents.
 - Camera position, unless later treated as a user preference rather than simulation state.
@@ -77,7 +78,7 @@ This boundary exists so future Codex tasks do not accidentally persist rendered 
 - Procedural visual config that can be re-derived from seed, cell, resource kind, and current visual settings.
 - Building/resource visual profile ids, scene/icon paths, placeholder palettes, scene-local sprites, and external visual instances. These come from presentation definitions documented in `docs/ASSET_REPLACEMENT.md`.
 - Building effect radii/tags and glow/warmth projection nodes; these derive from definitions plus completed building records.
-- Shared storage capacity; base capacity is code-backed and Storehouse bonuses derive from completed construction records plus `BuildingDefinition`.
+- Shared and per-component storage capacity; base capacity is code-backed and Storehouse bonuses derive from completed construction records plus `BuildingDefinition`.
 - Colonist activity, construction/harvest/haul assignment, carried payload, work/capacity reservation, movement target, transient cell path/path index, pause timer, environmental status flags, and overhead need labels.
 - Selected colonist references, selection markers, and colonist info panel contents.
 - Stockpile/harvest drag start/current cells, mode flags, preview polygons, result summaries, and `StockpileZoneVisual` nodes.
@@ -107,7 +108,7 @@ Version `2` save data currently includes:
 - `stockpile`: abstract stored `ResourceStockpile` totals by resource type. Harvested output remains outside these totals as ground items.
 - `deltas.manual_tiles`: manual terrain overrides as cell coordinates plus terrain names.
 - `deltas.depleted_resources`: harvested tree, rock, and Berry Bush ids tracked by `ChunkManager`.
-- `deltas.construction_sites`: authoritative `WorldState` construction records, including building id, origin/occupied cells, required and consumed resources, progress, build time, and completion flag.
+- `deltas.construction_sites`: authoritative `WorldState` construction records, including building id, origin/occupied cells, required and consumed resources, progress, build time, completion flag, and additive Storehouse `storage_contents` when present.
 - `deltas.harvest_orders`: active `WorldState` harvest intent containing order/resource ids, resource type, yield, and cell. Worker reservation is excluded.
 - `deltas.stockpile_zones`: authoritative `WorldState` zone records containing zone id, explicit cells, enabled state, and label.
 - `deltas.ground_items`: authoritative `WorldState` physical-item records containing item id, resource type, amount, cell, and enabled state.
@@ -115,13 +116,13 @@ Version `2` save data currently includes:
 
 Loading validates version `2`, applies world generator seed/config, imports `WorldState` time/stockpile/construction/harvest-order/stockpile-zone/ground-item state, imports `ChunkManager` world deltas, discards orders whose resource id is depleted, then asks `ColonistManager` to replace the population. Rendered cells/nodes, item visuals, designation markers, zone overlays, and placement previews remain excluded.
 
-Bottom-toolbar and Architect-menu state is also excluded. Normal/Build/Harvest/Stockpile mode, Architect open/closed state, selected tab/building button, generated button nodes, area/placement previews, result summaries, Cancel-button state, mode labels, and keyboard/UI focus are transient presentation/control state owned by `Main` or projected by `BottomToolbar` and reconstructed from runtime input rather than save data.
+Bottom-toolbar and Architect-menu state is also excluded. Active Normal/Build/Harvest mode, dormant legacy Stockpile mode, Architect open/closed state, selected tab/building button, generated button nodes, area/placement previews, result summaries, Cancel-button state, mode labels, and keyboard/UI focus are transient presentation/control state owned by `Main` or projected by `BottomToolbar`. The toolbar and keyboard no longer expose legacy zone creation.
 
 `Colonist.export_state()` stores relationship target ids without cached display names. After every colonist is recreated, `ColonistManager` resolves names from restored ids; missing targets are skipped. Imported colonists resume idle at their saved positions and rediscover needs/work through existing runtime behavior.
 
 Per-colonist work priorities are authoritative colonist record data and are saved as the complete work-type/value dictionary. Values normalize to `0` through `4`; records without this additive field receive the current defaults (Construct/Harvest `2`, future work types disabled). The current loader treats this as compatible version-2 data because the field has a default. There is no schema-minor or capability marker, so further additive changes must be checked for semantic as well as structural compatibility before retaining version `2`.
 
-Hunger remains inside the version-2 colonist `needs` dictionary. Eating spends the already-persistent `food` stockpile total, so no schema change is required. Eating state/timers are not exported; imports resume idle and may decide to eat again from restored Hunger and Food values.
+Hunger remains inside the version-2 colonist `needs` dictionary. Eating spends already-persistent Storehouse `storage_contents`, or legacy `food` totals when no storage exists, so no schema change is required. Eating state/timers are not exported; imports resume idle and may decide to eat again from restored Hunger and Food values.
 
 Version `1` saves are rejected as unsupported. Version `2` is the only accepted schema and there is no migration layer or schema-minor marker.
 
@@ -147,9 +148,9 @@ Completed-building effect state is not serialized separately. Campfire light/war
 
 Storehouse capacity is also not serialized separately. `ResourceStockpile` provides base capacity 100, while `WorldState` adds `storage_capacity` metadata from saved completed Storehouse records after construction import. Saved stockpile totals import unchanged even if they exceed the re-derived limit; new additions are rejected until capacity is available.
 
-Preparatory Storehouse storage component records are not serialized separately in version `2`. `WorldState` rebuilds empty read-only components from completed Storehouse construction records whenever construction state is imported or a Storehouse completes. Current hauling, construction, eating, aggregate resource totals, and UI counters remain backed by `ResourceStockpile`, not by component contents.
+Storehouse storage component records are not serialized as a separate top-level section in version `2`. `WorldState` rebuilds components from completed Storehouse construction records whenever construction state is imported or a Storehouse completes. Storehouse contents are saved additively on the completed construction record as `storage_contents`; transient component capacity and construction-material reservations are excluded. Hauling writes Storehouse contents, while worker construction and eating consume those contents. Legacy eating remains available only when no storage component exists. Aggregate resource totals and UI counters include both `ResourceStockpile` totals and component contents.
 
-Construction resource earmarks, harvest/haul workers, haul storage-capacity reservations, carried-item state, transient job candidates, and colonist cell paths/path indices are deliberately excluded from version `2` saves. Harvest creates no capacity reservation; Haul creates one transient reservation per claimed item. `ResourceStockpile.import_state()` clears reservations, WorldState restores orders/items without workers, and `Colonist.import_state()` resets all work/movement targets and path state to idle. Restored colonists rediscover work and recompute reachability from the loaded world. None of these paths refund resources already consumed into saved construction progress.
+Construction worker/material reservations, including a no-storage legacy bootstrap earmark, harvest/haul workers, haul storage-capacity reservations, carried-item state, transient job candidates, and colonist cell paths/path indices are deliberately excluded from version `2` saves. Harvest creates no capacity reservation; Haul creates one transient reservation per claimed item. WorldState import clears construction allocations and legacy earmarks and restores orders/items without workers, while `Colonist.import_state()` resets all work/movement targets and path state to idle. Restored colonists rediscover work and recompute reachability from the loaded world. None of these paths refund resources already consumed into saved construction progress.
 
 The selected panel's current focus, button focus/hover state, and formatted priority text are UI-only and are not saved. Only the values owned by each `Colonist` persist.
 

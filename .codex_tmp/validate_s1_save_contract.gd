@@ -166,6 +166,8 @@ func _build_representative_state(main: Node, generator: WorldGenerator, world_st
 		return {}
 	if not _add_resource(world_state, "food", 9):
 		return {}
+	if not _deposit_storehouse_resource(world_state, chunk_manager, "wood", 20, worker.current_cell + Vector2i(0, 10)):
+		return {}
 
 	var incomplete_origin: Vector2i = _find_building_origin(world_state, "cabin", worker.current_cell + Vector2i(10, 10))
 	if not _require(incomplete_origin != INVALID_CELL, "could not find an incomplete-site origin"):
@@ -193,7 +195,8 @@ func _build_representative_state(main: Node, generator: WorldGenerator, world_st
 		return {}
 
 	var item_cell: Vector2i = _find_clean_loaded_cell(world_state, chunk_manager, worker.current_cell + Vector2i(10, -8), [manual_cell, zone_cell])
-	var carry_cell: Vector2i = _find_clean_loaded_cell(world_state, chunk_manager, worker.current_cell + Vector2i(12, -6), [manual_cell, zone_cell, item_cell])
+	var carry_destination: Dictionary = world_state.call("_find_storage_component_haul_destination", worker.current_cell, 4)
+	var carry_cell: Vector2i = carry_destination.get("cell", INVALID_CELL) if bool(carry_destination.get("ok", false)) else INVALID_CELL
 	if not _require(item_cell != INVALID_CELL and carry_cell != INVALID_CELL, "could not find ground-item cells"):
 		return {}
 	var ground_item_result: Dictionary = world_state.create_ground_item("stone", 3, item_cell)
@@ -239,6 +242,8 @@ func _build_representative_state(main: Node, generator: WorldGenerator, world_st
 	worker.set_work_priority("Harvest", 0)
 	worker.set_work_priority("Haul", 1)
 	worker.move_speed = 1000.0
+	worker.current_cell = carry_cell
+	worker.global_position = chunk_manager.get_cell_world_position(carry_cell)
 	worker._enter_idle()
 
 	var carry_item_id: String = String(carry_item_result.get("item_id", ""))
@@ -250,7 +255,7 @@ func _build_representative_state(main: Node, generator: WorldGenerator, world_st
 		"priority": 1,
 		"target_id": carry_item_id,
 		"target_cell": carry_cell,
-		"destination_cell": zone_cell,
+		"destination_cell": haul_reservation.get("destination_cell", zone_cell),
 		"reservation_result": haul_reservation,
 	}
 	if not _require(worker.start_job(haul_job), "could not start representative haul job"):
@@ -259,18 +264,25 @@ func _build_representative_state(main: Node, generator: WorldGenerator, world_st
 		return {}
 
 	main.call("_set_selected_colonist", worker)
-	main.call("_set_stockpile_mode", true)
+	main.call("_set_harvest_mode", true)
 	main.call("_begin_area_drag", Vector2(128.0, 128.0))
-	if not _require(String(main.call("get_control_mode_name")) == "stockpile" and bool(main.get("is_dragging_stockpile_area")), "source transient UI mode/drag setup failed"):
+	if not _require(String(main.call("get_control_mode_name")) == "harvest" and bool(main.get("is_dragging_harvest_area")), "source transient UI mode/drag setup failed"):
 		return {}
 
 	if not _require(world_state.get_construction_reservation(incomplete_id) == construction_reservation_worker.colonist_id, "source construction reservation missing before save"):
+		return {}
+	if not _require(int(world_state.get_construction_material_reservation_summary(incomplete_id).get("count", 0)) > 0, "source construction material reservation missing before save"):
 		return {}
 	if not _require(world_state.get_harvest_order_reservation(reserved_order_id) == harvest_reservation_worker.colonist_id, "source harvest reservation missing before save"):
 		return {}
 	if not _require(not world_state.get_haul_item_reservation(carry_item_id).is_empty(), "source haul reservation missing before save"):
 		return {}
-	if not _require(world_state.get_resource_stockpile().get_reserved_storage_amount() == 4, "source capacity reservation missing before save"):
+	var haul_destination_kind: String = String(haul_reservation.get("destination_kind", ""))
+	var haul_storage_id: String = String(haul_reservation.get("storage_id", ""))
+	var reserved_haul_capacity: int = world_state.get_resource_stockpile().get_reserved_storage_amount()
+	if haul_destination_kind == "storage_component":
+		reserved_haul_capacity = int(world_state.get_storage_component_reservation_summary(haul_storage_id).get("reserved", 0))
+	if not _require(reserved_haul_capacity == 4, "source capacity reservation missing before save"):
 		return {}
 
 	return {
@@ -294,6 +306,22 @@ func _build_representative_state(main: Node, generator: WorldGenerator, world_st
 func _add_resource(world_state: Node, resource_type: String, amount: int) -> bool:
 	var result: Dictionary = world_state.add_resource(resource_type, amount)
 	return _require(bool(result.get("ok", false)), "could not add %d %s: %s" % [amount, resource_type, String(result.get("reason", "unknown"))])
+
+
+func _deposit_storehouse_resource(world_state: Node, chunk_manager: ChunkManager, resource_type: String, amount: int, origin: Vector2i) -> bool:
+	var item_cell: Vector2i = _find_clean_loaded_cell(world_state, chunk_manager, origin, [])
+	if not _require(item_cell != INVALID_CELL, "could not find Storehouse seed item cell"):
+		return false
+	var item_result: Dictionary = world_state.create_ground_item(resource_type, amount, item_cell)
+	if not _require(bool(item_result.get("ok", false)), "could not create Storehouse seed item"):
+		return false
+	var item_id: String = String(item_result.get("item_id", ""))
+	var reservation: Dictionary = world_state.reserve_haul_item(item_id, "s1_storage_seed")
+	if not _require(bool(reservation.get("ok", false)) and String(reservation.get("destination_kind", "")) == "storage_component", "could not reserve Storehouse seed haul"):
+		return false
+	var pickup: Dictionary = world_state.request_pickup_ground_item(item_id, "s1_storage_seed")
+	var deposit: Dictionary = world_state.request_deposit_carried_item("s1_storage_seed", pickup.get("item", {}), reservation.get("destination_cell", Vector2i.ZERO))
+	return _require(bool(pickup.get("ok", false)) and bool(deposit.get("ok", false)), "could not deposit Storehouse seed resource")
 
 
 func _place_and_complete(world_state: Node, building_id: String, search_origin: Vector2i) -> String:
@@ -409,11 +437,15 @@ func _verify_transient_state_reset(main: Node, world_state: Node, colonist_manag
 		return false
 	if not _require(not world_state.get_resource_stockpile().has_resource_reservation("construction:%s" % incomplete_id), "construction resource earmark survived load"):
 		return false
+	if not _require(world_state.get_construction_material_reservation_summary().get("count", -1) == 0, "construction material reservations survived load"):
+		return false
 	if not _require(world_state.get_harvest_order_reservation(reserved_order_id).is_empty(), "harvest reservation survived load"):
 		return false
 	if not _require(world_state.get_haul_item_reservation(carry_item_id).is_empty(), "haul reservation survived load"):
 		return false
 	if not _require(world_state.get_resource_stockpile().get_storage_reservation_summary().get("count", -1) == 0, "capacity reservation survived load"):
+		return false
+	if not _require(world_state.get_storage_component_reservation_summary().get("count", -1) == 0, "storage component capacity reservation survived load"):
 		return false
 	var worker: Colonist = _find_colonist(colonist_manager, String(setup["worker_id"]))
 	if not _require(worker != null and worker.get_activity_name() == "idle", "colonist activity did not reset to idle"):

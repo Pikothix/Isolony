@@ -8,7 +8,7 @@ This document records the current repository baseline. It describes the current 
 - Engine feature tags in `project.godot`: `4.7` and `Forward Plus`.
 - Main scene: `res://scenes/Main.tscn`.
 - Autoloads: none detected in `project.godot`.
-- Current prototype focus: deterministic isometric terrain, staged wood/stone/berry resources, physical ground items and hauling, Campfire/Cabin/Storehouse construction and effects, persistent colonist records and work priorities, stockpile zones, and debug UI.
+- Current prototype focus: deterministic isometric terrain, staged wood/stone/berry resources, physical ground items and Storehouse hauling, Campfire/Cabin/Storehouse construction and effects, persistent colonist records and work priorities, legacy stockpile-zone compatibility, and debug UI.
 
 ## Current Scene Structure
 
@@ -47,7 +47,7 @@ Scene-level values currently override some script defaults, including:
 
 ## Current System Ownership
 
-- `scripts/main.gd`: scene coordination, dependency injection, resource/time UI, transient Normal/Build/Harvest/Stockpile mode ownership, colonist selection, and request routing.
+- `scripts/main.gd`: scene coordination, dependency injection, resource/time UI, active Normal/Build/Harvest mode ownership, dormant legacy stockpile-mode compatibility, colonist selection, and request routing.
 - `scripts/simulation/world_state.gd`: authoritative construction/storage-component/harvest-order/stockpile-zone/ground-item lifecycle, bounded deterministic availability snapshots, completed-building effects/storage-capacity derivation, and validated stockpile coordination.
 - `scripts/simulation/time_state.gd`: clock time, day/night phase, clock labels, clock scaling, clock pause state, and time/phase signals. Its pause/scale values do not pause or scale all colonist simulation.
 - `scripts/simulation/resource_stockpile.gd`: abstract stored totals/capacity, construction resource earmarks, haul storage-capacity reservations, atomic mutations, and notifications.
@@ -68,7 +68,7 @@ Scene-level values currently override some script defaults, including:
 - `scripts/entities/colonist.gd`: authoritative persistent identity, position, needs, skills, traits, relationships, and per-work-type priorities plus transient construction/harvest/haul activity, current cell path, and cleanup.
 - `scripts/ui/colonist_info_panel.gd`: selected-colonist state projection plus request-only Construct/Harvest/Haul priority cycling; it owns no colonist state.
 - `scripts/ui/selected_tile_panel.gd`: selected terrain preview and label display using `TerrainConfig` metadata.
-- `scripts/ui/bottom_toolbar.gd`: request-only bottom toolbar, transient Architect submenu, `BuildingDefinition`-generated building buttons, Harvest/Stockpile compatibility actions, current-mode projection, and Cancel button.
+- `scripts/ui/bottom_toolbar.gd`: request-only bottom toolbar, transient Architect submenu, `BuildingDefinition`-generated building buttons, Harvest action, current-mode projection, and Cancel button.
 - `scripts/buildings/building_definition.gd`: Campfire, Cabin, and Storehouse footprint/cost/build/effect metadata plus deterministic Architect presentation order.
 - `scripts/buildings/construction_site_visual.gd`: definition-configured previews/effect overlays, optional external scene host, and fallback scaffolds/completed placeholders.
 
@@ -131,17 +131,17 @@ Ground items persist in `deltas.ground_items`, while visuals remain transient. H
 
 Haul is implemented through the existing Colonist job-candidate flow but remains disabled by default (`0`) to preserve older player work policies. The selected-colonist panel exposes a Haul priority button. Enabled idle colonists consider construction, harvest, then haul for equal priorities after urgent needs and eating.
 
-`WorldState` owns transient haul reservations keyed by item id. A successful reservation chooses the nearest valid loaded cell in any enabled stockpile zone, reserves the item's complete amount against `ResourceStockpile` capacity, and assigns one colonist. Items already inside enabled zones, unloaded items/destinations, reserved items, and items that do not fit available capacity are unavailable.
+`WorldState` owns transient haul reservations keyed by item id. A successful reservation prefers the nearest valid loaded deposit cell adjacent to a completed Storehouse storage component, reserves the item's complete amount against that component's capacity, and assigns one colonist. If no completed Storehouse destination is available, stockpile-zone hauling remains as a temporary legacy fallback that reserves capacity against `ResourceStockpile`. Items already inside enabled zones, unloaded items/destinations, reserved items, and items that do not fit the selected destination capacity are unavailable.
 
-The colonist enters `moving_to_haul_item`, picks up the complete item, briefly enters `carrying_item`, moves through `moving_to_stockpile`, then enters `depositing`. Deposit validates the same item, owner, destination, zone membership, and capacity reservation before consuming capacity and adding the full amount to stored totals. No partial carrying exists.
+The colonist enters `moving_to_haul_item`, picks up the complete item, briefly enters `carrying_item`, moves through `moving_to_stockpile`, then enters `depositing`. Storehouse deposit validates the same item, owner, adjacent destination cell, storage component, and component capacity reservation before adding the full amount to that component's contents. Legacy stockpile-zone deposit keeps the previous `ResourceStockpile` mutation path. No partial carrying exists.
 
 Abandonment before pickup releases item/capacity reservations. Abandonment after pickup drops an equivalent new ground item at the colonist's current cell; stale-owner cleanup restores it at the pickup cell when no live position is available. Haul reservation, destination, carried payload, and activities are transient. Save snapshots represent an in-flight payload as its original ground item at the pickup cell, so load clears carrying without losing resources.
 
 ## Inventory Ownership Issue
 
-Inventory is intentionally split. Abstract stored counts live in `ResourceStockpile`; physical ground items live as separate `WorldState` records. `Main` only displays stored totals, so harvested drops do not change the resource counter.
+Inventory is intentionally split. Abstract compatibility counts live in `ResourceStockpile`; Storehouse-owned hauled contents live in `WorldState` storage component records; physical ground items live as separate `WorldState` records. Worker construction reserves those component contents across one or more Storehouses and consumes them on first progress. Aggregate resource read APIs include both `ResourceStockpile` totals and Storehouse component contents, so harvested drops still do not change counters until hauled.
 
-The stockpile has a shared base capacity of 100 across Wood, Stone, Food, and any future generic resource key. Resource additions are rejected atomically when the requested full amount exceeds available capacity; no partial clamp occurs. Harvest drops are outside storage and reserve no capacity. Existing/imported totals are never deleted if capacity falls below the stored amount.
+The compatibility stockpile has a shared base capacity of 100 across Wood, Stone, Food, and any future generic resource key, plus existing completed-Storehouse capacity for systems not yet migrated. Storehouse components separately enforce per-building capacity for hauling and per-resource availability for construction. Resource additions are rejected atomically when the requested full amount exceeds available capacity; no partial clamp occurs. Harvest drops are outside storage and reserve no capacity. Existing/imported totals are never deleted if capacity falls below the stored amount.
 
 Near-term risk: future storage, jobs, save/load, multiplayer, or multiple resource owners will need more simulation state moved under `WorldState`.
 
@@ -221,17 +221,17 @@ The generated Storehouse Architect button enters Storehouse placement directly; 
 
 ## Build And Order Controls
 
-`Main` owns one transient control mode: Normal Selection, Build with the selected definition, Harvest Designation, or Stockpile Zone. Harvest and Stockpile modes reuse the same transient drag cells, six-pixel threshold, and placeholder rectangle preview. `BottomToolbar` emits requests only and renders `Main`'s mode label; it owns no construction, harvest, resource, or zone state.
+`Main` actively exposes Normal Selection, Build with the selected definition, and Harvest Designation. `BottomToolbar` emits requests only and renders `Main`'s mode label; it owns no construction, harvest, or resource state. Dormant stockpile-mode helpers remain only for legacy compatibility and have no toolbar or keyboard entry point.
 
-Architect building buttons select the corresponding `BuildingDefinition` id, close the submenu, and show the existing placement preview. Harvest Designation supports exact single-resource clicks and click-drag cell rectangles. Stockpile Zone mode uses `Z` or its toolbar button and commits the inclusive cell rectangle on release, including a one-cell click. Toolbar Cancel, Escape, or right-click leaves the active tool and clears the preview. Existing `B`, `H`, `Z`, `1`, `2`, `3`, `C`, and `X` controls remain available.
+Architect building buttons select the corresponding `BuildingDefinition` id, close the submenu, and show the existing placement preview. Harvest Designation supports exact single-resource clicks and click-drag cell rectangles. Toolbar Cancel, Escape, or right-click leaves the active tool and clears the preview. Active controls remain `B`, `H`, `1`, `2`, `3`, `C`, and `X`; `Z` no longer enters stockpile placement.
 
 `ChunkManager.get_loaded_resources_in_cell_rect()` returns defensive metadata for currently loaded, tracked resource nodes inside an inclusive cell rectangle without mutating them. Main submits each returned id independently to `WorldState`, counts designated/already-ordered/invalid/depleted results, and shows a compact last-area summary. Existing orders and invalid results are skipped without aborting the remaining rectangle.
 
-Current mode, selected building, Architect submenu visibility, generated-button state, drag/result state, preview state, and toolbar labels are UI/control state only. They are not included in version `2` saves and never authorize construction, harvest completion, or zone membership. Successful area harvest requests persist through `deltas.harvest_orders`; successful stockpile zones persist separately through `deltas.stockpile_zones`.
+Current mode, selected building, Architect submenu visibility, generated-button state, drag/result state, preview state, and toolbar labels are UI/control state only. They are not included in version `2` saves and never authorize construction or harvest completion. Successful area harvest requests persist through `deltas.harvest_orders`; imported legacy stockpile zones persist separately through `deltas.stockpile_zones`.
 
 ## Stockpile Zones
 
-`WorldState` owns each zone record with stable `zone_id`, explicit `cells`, `enabled`, and `label` fields plus an authoritative cell-to-zone index. Creation validates the whole request before mutation: the list must be non-empty, every cell must be loaded, walkable, non-water, non-cliff/non-mineable terrain, outside construction footprints, and outside existing zones. Duplicate input cells normalize to one cell; overlap with another zone rejects the complete request. Construction placement also rejects zone cells so the non-overlap invariant remains true.
+Stockpile zones are deprecated from the player workflow. `WorldState` retains each legacy zone record with stable `zone_id`, explicit `cells`, `enabled`, and `label` fields plus an authoritative cell-to-zone index. The compatibility request API still validates whole requests for old validators/data tooling, but `Main`, the toolbar, and keyboard controls no longer call it.
 
 `ChunkManager` listens for zone add/remove/replace signals and creates one blue placeholder marker per enabled zone cell in loaded chunks. Unloading deletes only those marker nodes. Chunk generation and save import query `WorldState` and recreate them, so overlays are never authoritative.
 
@@ -249,11 +249,13 @@ No authoritative construction, resource, colonist, stockpile, need, depletion, o
 
 Incomplete Storehouses draw a footprint scaffold. Completed Storehouses draw a simple warehouse placeholder. Visuals are projections only; `WorldState` derives capacity by summing the base 100 plus `storage_capacity` metadata from every completed authoritative Storehouse record. Chunk unload therefore cannot affect capacity.
 
-`WorldState` also derives one preparatory storage component record for each completed Storehouse. Each component is linked to the completed construction site id, building id, origin, occupied cells, and definition capacity, with empty contents in the current milestone. These records are read-only snapshots for future building-owned storage work; hauling, construction, eating, and the resource UI still use `ResourceStockpile` as the active gameplay storage authority.
+`WorldState` also derives one storage component record for each completed Storehouse. Each component is linked to the completed construction site id, building id, origin, occupied cells, and definition capacity. Hauling into completed Storehouses writes to component contents and reserves component capacity. Construction and eating consume component contents once storage exists; aggregate reads and the resource UI include both stores.
 
-`ResourceStockpile` owns stored totals, the current shared limit, construction earmarks, and haul-deposit capacity reservations. Harvest itself reserves no capacity because output remains physical; Haul reserves the full item amount when claiming work. The resource panel displays stored/capacity values; reserved haul capacity and ground items are excluded from the stored count.
+In Normal selection mode, clicking any occupied cell of a completed Storehouse opens a read-only storage inspector showing its display name, used/capacity total, and non-empty resource contents. Clicking terrain or selecting a colonist clears the Storehouse inspector. The selected storage id and formatted panel contents are transient UI state and are not saved.
 
-Version `2` saves no derived capacity or storage-component field. Completed Storehouse construction records persist normally, and capacity plus empty storage components are re-derived after load. Stockpile import accepts saved over-capacity totals without deleting them; later additions remain rejected until spending or more Storehouses creates room.
+`ResourceStockpile` owns compatibility stored totals, the current shared limit, no-storage construction/eating bootstrap mutations, and legacy haul-deposit capacity reservations. Harvest itself reserves no capacity because output remains physical. Storehouse Haul reserves the full item amount on the selected storage component; legacy zone Haul reserves in `ResourceStockpile`. The resource panel displays aggregate stored/capacity values; reserved haul capacity and ground items are excluded from the stored count.
+
+Version `2` saves no derived capacity field. Completed Storehouse construction records persist normally, and storage component records are re-derived after load. Storehouse contents are stored additively on the completed construction record as `storage_contents`; transient haul reservations are not saved. Stockpile import accepts saved over-capacity totals without deleting them; later additions remain rejected until spending or more Storehouses creates room.
 
 ## Colonist Construction Work
 
@@ -279,11 +281,11 @@ Existing `moving_to_construction` and `constructing` activity is not interrupted
 
 ## Colonist Eating Behaviour
 
-When an idle colonist has Hunger below 60, it asks `WorldState.request_consume_food(colonist_id, 1)` for one Food. `WorldState` validates the colonist id/amount and delegates to `ResourceStockpile.request_spend_resources()`, so unavailable or reserved Food cannot be double-spent. A successful unit restores 25 Hunger and enters the visible `eating` activity for 0.75 seconds. The colonist takes another unit after that delay while below the target of 85, stopping at the target, at 100, or when Food is unavailable.
+When an idle colonist has Hunger below 60, it asks `WorldState.request_consume_food(colonist_id, 1)` for one Food. `WorldState` validates the colonist id/amount and atomically consumes available Storehouse Food when any storage component exists. With no storage components it may use legacy `ResourceStockpile` Food for bootstrap compatibility. A successful unit restores 25 Hunger and enters the visible `eating` activity for 0.75 seconds. The colonist takes another unit after that delay while below the target of 85, stopping at the target, at 100, or when Food is unavailable.
 
 Idle priority is warmth/shelter seeking, then eating, then normal job selection, then wandering. Existing wandering, need-seeking, travel, construction, and harvesting are not interrupted; hunger is reconsidered on the next idle decision. Failed Food requests do not change Hunger, Food, activity, jobs, or reservations.
 
-Eating activity/timers are transient and excluded from version `2`. Hunger and the already-spent stored Food total persist, and imported colonists resume idle so low Hunger can request Food again. Physical ground Food cannot be eaten until hauled into storage; there is no cooking, meals, dining, starvation damage, or mood effect.
+Eating activity/timers are transient and excluded from version `2`. Hunger and the already-spent Storehouse or legacy Food total persist, and imported colonists resume idle so low Hunger can request Food again. Physical ground Food cannot be eaten until hauled into storage; there is no cooking, meals, dining, starvation damage, or mood effect.
 
 Colonist Rest/Warmth/Shelter/Hunger values are included in version `2` records. Existing version-2 records without Hunger import it as 100. Seeking activity remains transient; restored colonists resume idle and re-evaluate needs normally.
 
@@ -349,7 +351,7 @@ Harvest output remains physical and does not require free abstract storage capac
 
 ## Known Architectural Risks
 
-- `Main` creates and wires `WorldState`; `WorldState` owns construction reservations and its `ResourceStockpile` owns resource earmarks.
+- `Main` creates and wires `WorldState`; `WorldState` owns worker and per-Storehouse construction material reservations. While no completed storage component exists, worker construction and eating may bootstrap from legacy `ResourceStockpile` totals; direct debug progress also retains compatibility access.
 - Terrain classification still lives in `WorldGenerator`, while terrain metadata queries live in `TerrainConfig`.
 - Elevation classification is an early deterministic prototype and does not yet support slopes, cliff faces, mining deltas, or pathfinding-aware elevation transitions.
 - Manual tile overrides can be exported/imported by `ChunkManager`, but still live outside `WorldState`.
@@ -361,7 +363,7 @@ Harvest output remains physical and does not require free abstract storage capac
 - `SaveGameService` is a non-autoload helper service with no production caller; no project-wide simulation autoload state exists.
 - `ProcSpriteCache` is static hidden global state, but it is presentation-only, reconstructible, and excluded from persistence.
 - `ReachabilityQuery` performs a synchronous BFS bounded to 4,096 visited loaded cells for every requested path. It has no cache, async execution, off-screen routing, diagonal movement, or terrain-cost model.
-- Candidate collection can run up to 16 construction paths, 16 harvest paths, and two path queries for each of 16 haul items per idle decision. The bound prevents an unbounded scan but can defer valid work beyond the first 16 stable-id-ordered available records.
+- Candidate collection stops after the first reachable record per enabled work type and idle work evaluation is throttled per colonist. A work type can still run up to 16 path checks when all bounded stable-id-ordered records are unreachable, and valid work beyond that window remains deferred.
 - Newly generated runtime ids remain spawn-order based, while loaded version `2` records preserve their saved stable ids.
 - Skill generation is likewise tied to spawn order; there are no XP thresholds, decay, learning, or gameplay modifiers yet.
 - Trait generation is tied to spawn order, and only construction speed and night Rest loss currently consume trait modifiers.

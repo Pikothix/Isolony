@@ -34,7 +34,9 @@ var _placement_query: Node
 var _construction_sites: Dictionary = {}
 var _occupied_construction_cells: Dictionary = {}
 var _construction_reservations: Dictionary = {}
+var _construction_material_reservations: Dictionary = {}
 var _storage_components: Dictionary = {}
+var _storage_component_reservations: Dictionary = {}
 var _harvest_orders: Dictionary = {}
 var _harvest_order_by_resource: Dictionary = {}
 var _stockpile_zones: Dictionary = {}
@@ -143,11 +145,10 @@ func request_cancel_construction(site_id: String) -> Dictionary:
 		var worker_release: Dictionary = release_construction_reservation(site_id, "", "construction_cancelled")
 		if not bool(worker_release.get("ok", false)):
 			return _build_cancellation_result(false, "worker_%s" % String(worker_release.get("reason", "release_failed")), site_id, building_id, origin_cell, resources_consumed)
-	var resource_reservation_id: String = _build_construction_resource_reservation_id(site_id)
-	if _resource_stockpile.has_resource_reservation(resource_reservation_id):
-		var resource_release: Dictionary = _resource_stockpile.release_resource_reservation(resource_reservation_id)
-		if not bool(resource_release.get("ok", false)):
-			return _build_cancellation_result(false, "resource_%s" % String(resource_release.get("reason", "release_failed")), site_id, building_id, origin_cell, resources_consumed)
+	_release_construction_materials(site_id)
+	var legacy_reservation_id: String = _build_construction_resource_reservation_id(site_id)
+	if _resource_stockpile.has_resource_reservation(legacy_reservation_id):
+		_resource_stockpile.release_resource_reservation(legacy_reservation_id)
 	for cell: Vector2i in site.get("occupied_cells", []):
 		if String(_occupied_construction_cells.get(cell, "")) == site_id:
 			_occupied_construction_cells.erase(cell)
@@ -198,7 +199,12 @@ func reserve_construction_site(colonist_id: String, site_id: String) -> Dictiona
 	if not _can_fund_construction_site(site):
 		return _build_reservation_result(false, "insufficient_resources", site_id, colonist_id)
 	if not bool(site.get("resources_consumed", false)):
-		var resource_result: Dictionary = _resource_stockpile.reserve_resources(_build_construction_resource_reservation_id(site_id), site.get("required_resources", {}))
+		var resource_result: Dictionary
+		if _storage_components.is_empty():
+			## Bootstrap compatibility ends as soon as any completed storage component exists.
+			resource_result = _resource_stockpile.reserve_resources(_build_construction_resource_reservation_id(site_id), site.get("required_resources", {}))
+		else:
+			resource_result = _reserve_construction_materials(site_id, site.get("required_resources", {}))
 		if not bool(resource_result.get("ok", false)):
 			return _build_reservation_result(false, String(resource_result.get("reason", "resource_reservation_failed")), site_id, colonist_id)
 	_construction_reservations[site_id] = colonist_id
@@ -210,11 +216,12 @@ func release_construction_reservation(site_id: String, colonist_id: String = "",
 	var reserved_by: String = String(_construction_reservations[site_id])
 	if not colonist_id.is_empty() and reserved_by != colonist_id:
 		return _build_reservation_result(false, "reserved_by_other_colonist", site_id, reserved_by, cleanup_reason)
-	var resource_reservation_id: String = _build_construction_resource_reservation_id(site_id)
-	if _resource_stockpile.has_resource_reservation(resource_reservation_id):
-		var resource_result: Dictionary = _resource_stockpile.release_resource_reservation(resource_reservation_id)
-		if not bool(resource_result.get("ok", false)):
-			return _build_reservation_result(false, String(resource_result.get("reason", "resource_release_failed")), site_id, reserved_by, cleanup_reason)
+	_release_construction_materials(site_id)
+	var legacy_reservation_id: String = _build_construction_resource_reservation_id(site_id)
+	if _resource_stockpile.has_resource_reservation(legacy_reservation_id):
+		var legacy_release: Dictionary = _resource_stockpile.release_resource_reservation(legacy_reservation_id)
+		if not bool(legacy_release.get("ok", false)):
+			return _build_reservation_result(false, String(legacy_release.get("reason", "resource_release_failed")), site_id, reserved_by, cleanup_reason)
 	_construction_reservations.erase(site_id)
 	return _build_reservation_result(true, "released", site_id, reserved_by, cleanup_reason)
 
@@ -272,11 +279,35 @@ func get_construction_reservation_summary() -> Dictionary:
 		entries.append({
 			"site_id": id_text,
 			"colonist_id": String(_construction_reservations[site_id]),
-			"resource_reserved": _resource_stockpile.has_resource_reservation(_build_construction_resource_reservation_id(id_text)),
+			"resource_reserved": _construction_material_reservations.has(id_text) or _resource_stockpile.has_resource_reservation(_build_construction_resource_reservation_id(id_text)),
 			"resources_consumed": bool(site.get("resources_consumed", false)),
 			"completed": bool(site.get("completed", false)),
 		})
 	return {"count": entries.size(), "reservations": entries}
+
+func get_construction_material_reservation_summary(site_id: String = "") -> Dictionary:
+	var allocations: Array[Dictionary] = []
+	var site_ids: Array[String] = []
+	for reserved_site_id_value: Variant in _construction_material_reservations.keys():
+		var reserved_site_id: String = String(reserved_site_id_value)
+		if site_id.is_empty() or reserved_site_id == site_id:
+			site_ids.append(reserved_site_id)
+	site_ids.sort()
+	for reserved_site_id: String in site_ids:
+		for allocation_value: Variant in _construction_material_reservations[reserved_site_id]:
+			allocations.append((allocation_value as Dictionary).duplicate(true))
+	return {
+		"site_id": site_id,
+		"site_count": site_ids.size(),
+		"count": allocations.size(),
+		"allocations": allocations,
+	}
+
+func get_available_storage_resource_total(resource_type: String) -> int:
+	var available: int = 0
+	for storage_id_value: Variant in _storage_components.keys():
+		available += _get_storage_component_available_resource_amount(String(storage_id_value), resource_type)
+	return available
 
 func get_construction_reservation(site_id: String) -> String:
 	return String(_construction_reservations.get(site_id, ""))
@@ -443,13 +474,15 @@ func request_progress_construction(site_id: String, amount: float = 1.0, colonis
 		return _build_progress_result(false, "invalid_build_amount", site_id, amount, float(site.get("build_progress", 0.0)), false, bool(site.get("resources_consumed", false)))
 	var resources_consumed: bool = bool(site.get("resources_consumed", false))
 	if not resources_consumed:
-		var resource_reservation_id: String = _build_construction_resource_reservation_id(site_id)
 		var spend_result: Dictionary
-		if _resource_stockpile.has_resource_reservation(resource_reservation_id):
-			spend_result = _resource_stockpile.consume_reserved_resources(resource_reservation_id)
+		if _construction_material_reservations.has(site_id):
+			spend_result = _consume_construction_materials(site_id)
+		elif _resource_stockpile.has_resource_reservation(_build_construction_resource_reservation_id(site_id)):
+			spend_result = _resource_stockpile.consume_reserved_resources(_build_construction_resource_reservation_id(site_id))
 		elif not colonist_id.is_empty():
 			return _build_progress_result(false, "missing_resource_reservation", site_id, amount, float(site.get("build_progress", 0.0)), false, false)
 		else:
+			## Temporary bootstrap/debug compatibility: unowned direct progress still spends legacy stockpile totals.
 			spend_result = _resource_stockpile.request_spend_resources(site.get("required_resources", {}))
 		if not bool(spend_result.get("ok", false)):
 			return _build_progress_result(false, String(spend_result.get("reason", "resource_spend_failed")), site_id, amount, float(site.get("build_progress", 0.0)), false, false)
@@ -480,7 +513,9 @@ func get_construction_site_at_cell(cell: Vector2i) -> Dictionary:
 func _can_fund_construction_site(site: Dictionary) -> bool:
 	if bool(site.get("resources_consumed", false)):
 		return true
-	return _resource_stockpile.can_reserve_resources(site.get("required_resources", {}))
+	if _storage_components.is_empty():
+		return _resource_stockpile.can_reserve_resources(site.get("required_resources", {}))
+	return _can_reserve_construction_materials(site.get("required_resources", {}))
 
 func get_construction_sites() -> Array[Dictionary]:
 	var sites: Array[Dictionary] = []
@@ -489,7 +524,7 @@ func get_construction_sites() -> Array[Dictionary]:
 	return sites
 
 func get_storage_components() -> Array[Dictionary]:
-	## Preparatory building-owned storage records. Gameplay still uses ResourceStockpile in R02B.
+	## Return defensive snapshots of building-owned storage contents and capacity state.
 	var components: Array[Dictionary] = []
 	var storage_ids: Array[String] = []
 	for storage_id_value: Variant in _storage_components.keys():
@@ -516,6 +551,23 @@ func get_total_storage_component_capacity() -> int:
 	for component: Variant in _storage_components.values():
 		capacity += int((component as Dictionary).get("capacity", 0))
 	return capacity
+
+func get_storage_component_reservation_summary(storage_id: String = "") -> Dictionary:
+	var reservations: Dictionary = {}
+	var reserved: int = 0
+	for reservation_id_value: Variant in _storage_component_reservations.keys():
+		var reservation_id: String = String(reservation_id_value)
+		var reservation: Dictionary = _storage_component_reservations[reservation_id]
+		if not storage_id.is_empty() and String(reservation.get("storage_id", "")) != storage_id:
+			continue
+		reservations[reservation_id] = reservation.duplicate(true)
+		reserved += int(reservation.get("amount", 0))
+	return {
+		"storage_id": storage_id,
+		"count": reservations.size(),
+		"reserved": reserved,
+		"reservations": reservations,
+	}
 
 func request_create_stockpile_zone(cells: Array) -> Dictionary:
 	## Validate the complete request before assigning an id or mutating authoritative zone state.
@@ -742,6 +794,7 @@ func import_ground_items(entries: Array) -> Dictionary:
 	_ground_items = imported_items
 	_next_ground_item_id = next_item_number
 	_haul_reservations.clear()
+	_storage_component_reservations.clear()
 	ground_items_replaced.emit()
 	return _build_import_result(true, "imported")
 
@@ -792,13 +845,15 @@ func get_available_haul_items(_colonist_id: String = "", limit: int = DEFAULT_JO
 			continue
 		if not _placement_query.is_cell_loaded(item_cell) or _is_cell_in_enabled_stockpile_zone(item_cell):
 			continue
-		if amount <= 0 or not _resource_stockpile.can_reserve_storage(amount):
+		if amount <= 0:
 			continue
-		var destination: Dictionary = _find_haul_destination(item_cell)
+		var destination: Dictionary = _find_haul_destination(item_cell, amount)
 		if not bool(destination.get("ok", false)):
 			continue
 		var candidate: Dictionary = item.duplicate(true)
 		candidate["destination_cell"] = destination.get("cell", Vector2i.ZERO)
+		candidate["destination_kind"] = String(destination.get("kind", ""))
+		candidate["storage_id"] = String(destination.get("storage_id", ""))
 		candidates.append(candidate)
 		if candidates.size() >= candidate_limit:
 			break
@@ -821,17 +876,25 @@ func reserve_haul_item(item_id: String, colonist_id: String) -> Dictionary:
 		return _build_haul_result(false, "item_unavailable", item_id, colonist_id, item, {})
 	if _is_cell_in_enabled_stockpile_zone(item_cell):
 		return _build_haul_result(false, "item_already_stockpiled", item_id, colonist_id, item, {})
-	var destination: Dictionary = _find_haul_destination(item_cell)
+	var destination: Dictionary = _find_haul_destination(item_cell, int(item.get("amount", 0)))
 	if not bool(destination.get("ok", false)):
 		return _build_haul_result(false, String(destination.get("reason", "no_destination")), item_id, colonist_id, item, {})
 	var storage_reservation_id: String = _build_haul_storage_reservation_id(item_id)
-	var storage_result: Dictionary = _resource_stockpile.reserve_storage(storage_reservation_id, int(item.get("amount", 0)))
+	var destination_kind: String = String(destination.get("kind", ""))
+	var storage_id: String = String(destination.get("storage_id", ""))
+	var storage_result: Dictionary
+	if destination_kind == "storage_component":
+		storage_result = _reserve_storage_component_capacity(storage_reservation_id, storage_id, int(item.get("amount", 0)))
+	else:
+		storage_result = _resource_stockpile.reserve_storage(storage_reservation_id, int(item.get("amount", 0)))
 	if not bool(storage_result.get("ok", false)):
 		return _build_haul_result(false, String(storage_result.get("reason", "storage_reservation_failed")), item_id, colonist_id, item, {})
 	var reservation := {
 		"item_id": item_id,
 		"reserved_by_colonist_id": colonist_id,
 		"destination_cell": destination.get("cell", Vector2i.ZERO),
+		"destination_kind": destination_kind,
+		"storage_id": storage_id,
 		"storage_reservation_id": storage_reservation_id,
 		"item": item.duplicate(true),
 		"pickup_cell": item_cell,
@@ -889,23 +952,33 @@ func request_deposit_carried_item(colonist_id: String, item_data: Dictionary, de
 		return _build_haul_result(false, "item_not_picked_up", item_id, colonist_id, item_data, reservation)
 	if not _haul_item_matches(item_data, reservation.get("item", {})):
 		return _build_haul_result(false, "item_mismatch", item_id, colonist_id, item_data, reservation)
-	if destination_cell != reservation.get("destination_cell", Vector2i.ZERO) or not _is_valid_haul_destination(destination_cell):
+	if destination_cell != reservation.get("destination_cell", Vector2i.ZERO) or not _is_valid_reserved_haul_destination(reservation, destination_cell):
 		return _build_haul_result(false, "destination_invalid", item_id, colonist_id, item_data, reservation)
 	var amount: int = int(item_data.get("amount", 0))
 	var storage_reservation_id: String = String(reservation.get("storage_reservation_id", ""))
-	var capacity_result: Dictionary = _resource_stockpile.validate_storage_reservation(storage_reservation_id, amount)
+	var destination_kind: String = String(reservation.get("destination_kind", ""))
+	var capacity_result: Dictionary
+	if destination_kind == "storage_component":
+		capacity_result = _validate_storage_component_reservation(storage_reservation_id, String(reservation.get("storage_id", "")), amount)
+	else:
+		capacity_result = _resource_stockpile.validate_storage_reservation(storage_reservation_id, amount)
 	if not bool(capacity_result.get("ok", false)):
 		return _build_haul_result(false, String(capacity_result.get("reason", "storage_reservation_invalid")), item_id, colonist_id, item_data, reservation)
-	var consume_result: Dictionary = _resource_stockpile.consume_storage_reservation(storage_reservation_id, amount)
+	var consume_result: Dictionary
+	if destination_kind == "storage_component":
+		consume_result = _consume_storage_component_reservation(storage_reservation_id, String(reservation.get("storage_id", "")), String(item_data.get("resource_type", "")), amount)
+	else:
+		consume_result = _resource_stockpile.consume_storage_reservation(storage_reservation_id, amount)
 	if not bool(consume_result.get("ok", false)):
 		return _build_haul_result(false, String(consume_result.get("reason", "storage_reservation_consume_failed")), item_id, colonist_id, item_data, reservation)
-	var addition_result: Dictionary = _resource_stockpile.request_add_resource(String(item_data.get("resource_type", "")), amount)
-	if not bool(addition_result.get("ok", false)):
-		push_error("Haul deposit invariant failed after consuming reserved capacity: %s" % String(addition_result.get("reason", "addition_failed")))
-		return _build_haul_result(false, "stockpile_commit_invariant_failed", item_id, colonist_id, item_data, reservation)
+	if destination_kind != "storage_component":
+		var addition_result: Dictionary = _resource_stockpile.request_add_resource(String(item_data.get("resource_type", "")), amount)
+		if not bool(addition_result.get("ok", false)):
+			push_error("Haul deposit invariant failed after consuming reserved capacity: %s" % String(addition_result.get("reason", "addition_failed")))
+			return _build_haul_result(false, "stockpile_commit_invariant_failed", item_id, colonist_id, item_data, reservation)
 	_haul_reservations.erase(item_id)
 	var result: Dictionary = _build_haul_result(true, "deposited", item_id, colonist_id, item_data, reservation)
-	result["resource_total"] = _resource_stockpile.get_total(String(item_data.get("resource_type", "")))
+	result["resource_total"] = get_resource_total(String(item_data.get("resource_type", "")))
 	return result
 
 func request_drop_carried_item(item_id: String, colonist_id: String, cell: Vector2i, reason: String = "haul_dropped") -> Dictionary:
@@ -942,10 +1015,69 @@ func cleanup_stale_haul_reservations(active_colonist_ids: Array) -> void:
 		if not active.has(String(reservation.get("reserved_by_colonist_id", ""))):
 			release_haul_item(item_id, "", "stale_owner_cleanup")
 
-func _find_haul_destination(from_cell: Vector2i) -> Dictionary:
+func _find_haul_destination(from_cell: Vector2i, amount: int = 0) -> Dictionary:
+	var storage_destination: Dictionary = _find_storage_component_haul_destination(from_cell, amount)
+	if bool(storage_destination.get("ok", false)):
+		return storage_destination
+	return _find_legacy_stockpile_haul_destination(from_cell, amount)
+
+func _find_storage_component_haul_destination(from_cell: Vector2i, amount: int) -> Dictionary:
+	var found: bool = false
+	var best_cell: Vector2i = Vector2i.ZERO
+	var best_storage_id: String = ""
+	var best_distance: int = 0
+	var storage_ids: Array[String] = []
+
+	for storage_id_value: Variant in _storage_components.keys():
+		storage_ids.append(String(storage_id_value))
+	storage_ids.sort()
+
+	for storage_id: String in storage_ids:
+		var component: Dictionary = _storage_components[storage_id]
+		var open_capacity: int = _get_storage_component_available_capacity(storage_id)
+		if open_capacity <= 0 or (amount > 0 and open_capacity < amount):
+			continue
+
+		for cell: Vector2i in _get_storage_component_destination_cells(component):
+			if not _is_valid_storage_component_destination(cell):
+				continue
+
+			var distance: int = (cell - from_cell).length_squared()
+			var is_better_tie: bool = (
+				cell.y < best_cell.y
+				or (
+					cell.y == best_cell.y
+					and (
+						cell.x < best_cell.x
+						or (
+							cell.x == best_cell.x
+							and storage_id < best_storage_id
+						)
+					)
+				)
+			)
+
+			if not found or distance < best_distance or (distance == best_distance and is_better_tie):
+				found = true
+				best_cell = cell
+				best_storage_id = storage_id
+				best_distance = distance
+
+	return {
+		"ok": found,
+		"reason": "found" if found else "no_valid_storehouse_destination",
+		"kind": "storage_component",
+		"cell": best_cell,
+		"storage_id": best_storage_id,
+	}
+func _find_legacy_stockpile_haul_destination(from_cell: Vector2i, amount: int) -> Dictionary:
 	var found: bool = false
 	var best_cell: Vector2i = Vector2i.ZERO
 	var best_distance: int = 0
+	if _resource_stockpile == null:
+		return {"ok": false, "reason": "stockpile_unavailable", "kind": "legacy_stockpile_zone", "cell": best_cell, "storage_id": ""}
+	if amount > 0 and not _resource_stockpile.can_reserve_storage(amount):
+		return {"ok": false, "reason": "insufficient_legacy_stockpile_capacity", "kind": "legacy_stockpile_zone", "cell": best_cell, "storage_id": ""}
 	for zone_value: Variant in _stockpile_zones.values():
 		var zone: Dictionary = zone_value
 		if not bool(zone.get("enabled", true)):
@@ -958,10 +1090,44 @@ func _find_haul_destination(from_cell: Vector2i) -> Dictionary:
 				found = true
 				best_cell = cell
 				best_distance = distance
-	return {"ok": found, "reason": "found" if found else "no_valid_stockpile_destination", "cell": best_cell}
+	return {
+		"ok": found,
+		"reason": "found" if found else "no_valid_stockpile_destination",
+		"kind": "legacy_stockpile_zone",
+		"cell": best_cell,
+		"storage_id": "",
+	}
+
+func _is_valid_reserved_haul_destination(reservation: Dictionary, cell: Vector2i) -> bool:
+	if String(reservation.get("destination_kind", "")) == "storage_component":
+		var storage_id: String = String(reservation.get("storage_id", ""))
+		return _storage_components.has(storage_id) and _get_storage_component_destination_cells(_storage_components[storage_id]).has(cell) and _is_valid_storage_component_destination(cell)
+	return _is_valid_haul_destination(cell)
 
 func _is_valid_haul_destination(cell: Vector2i) -> bool:
 	if _placement_query == null or not _placement_query.is_cell_loaded(cell) or not _is_cell_in_enabled_stockpile_zone(cell):
+		return false
+	var tile_info: Dictionary = _placement_query.get_effective_tile_info(cell)
+	var terrain_name: String = String(tile_info.get("terrain", ""))
+	return bool(tile_info.get("walkable", false)) and terrain_name != "WATER" and terrain_name != "ROCK_WALL" and not bool(tile_info.get("mineable", false)) and not _occupied_construction_cells.has(cell)
+
+func _get_storage_component_destination_cells(component: Dictionary) -> Array[Vector2i]:
+	var candidates: Array[Vector2i] = []
+	var seen: Dictionary = {}
+	for occupied_cell: Vector2i in component.get("occupied_cells", []):
+		for offset: Vector2i in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+			var cell: Vector2i = occupied_cell + offset
+			if seen.has(cell) or (component.get("occupied_cells", []) as Array).has(cell):
+				continue
+			seen[cell] = true
+			candidates.append(cell)
+	candidates.sort_custom(func(first: Vector2i, second: Vector2i) -> bool:
+		return first.y < second.y if first.y != second.y else first.x < second.x
+	)
+	return candidates
+
+func _is_valid_storage_component_destination(cell: Vector2i) -> bool:
+	if _placement_query == null or not _placement_query.is_cell_loaded(cell):
 		return false
 	var tile_info: Dictionary = _placement_query.get_effective_tile_info(cell)
 	var terrain_name: String = String(tile_info.get("terrain", ""))
@@ -971,6 +1137,230 @@ func _is_cell_in_enabled_stockpile_zone(cell: Vector2i) -> bool:
 	var zone_id: String = String(_stockpile_zone_by_cell.get(cell, ""))
 	return not zone_id.is_empty() and bool((_stockpile_zones.get(zone_id, {}) as Dictionary).get("enabled", true))
 
+func _can_reserve_construction_materials(cost: Dictionary) -> bool:
+	return bool(_plan_construction_material_allocations("", cost).get("ok", false))
+
+func _reserve_construction_materials(site_id: String, cost: Dictionary) -> Dictionary:
+	if site_id.is_empty():
+		return _build_construction_material_result(false, "empty_site_id", site_id, [])
+	if _construction_material_reservations.has(site_id):
+		return _build_construction_material_result(false, "duplicate_reservation", site_id, _construction_material_reservations[site_id])
+	var plan: Dictionary = _plan_construction_material_allocations(site_id, cost)
+	if not bool(plan.get("ok", false)):
+		return plan
+	var allocations: Array = plan.get("allocations", [])
+	_construction_material_reservations[site_id] = allocations.duplicate(true)
+	return _build_construction_material_result(true, "reserved", site_id, allocations)
+
+func _plan_construction_material_allocations(site_id: String, cost: Dictionary) -> Dictionary:
+	var allocations: Array[Dictionary] = []
+	var resource_types: Array[String] = []
+	for resource_type_value: Variant in cost.keys():
+		resource_types.append(String(resource_type_value))
+	resource_types.sort()
+	var storage_ids: Array[String] = []
+	for storage_id_value: Variant in _storage_components.keys():
+		storage_ids.append(String(storage_id_value))
+	storage_ids.sort()
+	for resource_type: String in resource_types:
+		var required: int = int(cost.get(resource_type, 0))
+		if resource_type.is_empty() or required < 0:
+			return _build_construction_material_result(false, "invalid_cost", site_id, [])
+		var remaining: int = required
+		for storage_id: String in storage_ids:
+			if remaining <= 0:
+				break
+			var available: int = _get_storage_component_available_resource_amount(storage_id, resource_type)
+			var amount: int = mini(available, remaining)
+			if amount <= 0:
+				continue
+			allocations.append({
+				"construction_site_id": site_id,
+				"storage_id": storage_id,
+				"resource_type": resource_type,
+				"amount": amount,
+			})
+			remaining -= amount
+		if remaining > 0:
+			return _build_construction_material_result(false, "insufficient_storage_resources", site_id, [])
+	return _build_construction_material_result(true, "available", site_id, allocations)
+
+func _consume_construction_materials(site_id: String) -> Dictionary:
+	if not _construction_material_reservations.has(site_id):
+		return _build_construction_material_result(false, "missing_reservation", site_id, [])
+	var allocations: Array = _construction_material_reservations[site_id]
+	var updated_contents: Dictionary = {}
+	for allocation_value: Variant in allocations:
+		var allocation: Dictionary = allocation_value
+		var storage_id: String = String(allocation.get("storage_id", ""))
+		var resource_type: String = String(allocation.get("resource_type", ""))
+		var amount: int = int(allocation.get("amount", 0))
+		if not _storage_components.has(storage_id) or resource_type.is_empty() or amount <= 0:
+			return _build_construction_material_result(false, "invalid_reservation", site_id, allocations)
+		var contents: Dictionary = updated_contents.get(storage_id, (_storage_components[storage_id] as Dictionary).get("contents", {}).duplicate(true))
+		if int(contents.get(resource_type, 0)) < amount:
+			return _build_construction_material_result(false, "reserved_material_unavailable", site_id, allocations)
+		contents[resource_type] = int(contents.get(resource_type, 0)) - amount
+		updated_contents[storage_id] = contents
+	for storage_id_value: Variant in updated_contents.keys():
+		var storage_id: String = String(storage_id_value)
+		var component: Dictionary = _storage_components[storage_id]
+		component["contents"] = (updated_contents[storage_id] as Dictionary).duplicate(true)
+		_storage_components[storage_id] = component
+	_construction_material_reservations.erase(site_id)
+	var changed_resources: Dictionary = {}
+	for allocation_value: Variant in allocations:
+		changed_resources[String((allocation_value as Dictionary).get("resource_type", ""))] = true
+	for resource_type_value: Variant in changed_resources.keys():
+		var resource_type: String = String(resource_type_value)
+		resource_total_changed.emit(resource_type, get_resource_total(resource_type))
+	storage_capacity_changed.emit(get_storage_capacity(), get_stored_resource_total())
+	return _build_construction_material_result(true, "consumed", site_id, allocations)
+
+func _release_construction_materials(site_id: String) -> Dictionary:
+	if not _construction_material_reservations.has(site_id):
+		return _build_construction_material_result(false, "not_reserved", site_id, [])
+	var allocations: Array = _construction_material_reservations[site_id]
+	_construction_material_reservations.erase(site_id)
+	return _build_construction_material_result(true, "released", site_id, allocations)
+
+func _get_storage_component_available_resource_amount(storage_id: String, resource_type: String) -> int:
+	if not _storage_components.has(storage_id) or resource_type.is_empty():
+		return 0
+	var available: int = int((_storage_components[storage_id] as Dictionary).get("contents", {}).get(resource_type, 0))
+	for allocations_value: Variant in _construction_material_reservations.values():
+		for allocation_value: Variant in allocations_value:
+			var allocation: Dictionary = allocation_value
+			if String(allocation.get("storage_id", "")) == storage_id and String(allocation.get("resource_type", "")) == resource_type:
+				available -= int(allocation.get("amount", 0))
+	return maxi(available, 0)
+
+func _consume_storage_resource(resource_type: String, amount: int) -> Dictionary:
+	if resource_type.is_empty() or amount <= 0:
+		return {"ok": false, "reason": "invalid_resource_request", "resource_type": resource_type, "amount": amount}
+	var storage_ids: Array[String] = []
+	for storage_id_value: Variant in _storage_components.keys():
+		storage_ids.append(String(storage_id_value))
+	storage_ids.sort()
+	var deductions: Array[Dictionary] = []
+	var remaining: int = amount
+	for storage_id: String in storage_ids:
+		if remaining <= 0:
+			break
+		var available: int = _get_storage_component_available_resource_amount(storage_id, resource_type)
+		var consumed: int = mini(available, remaining)
+		if consumed <= 0:
+			continue
+		deductions.append({"storage_id": storage_id, "amount": consumed})
+		remaining -= consumed
+	if remaining > 0:
+		return {"ok": false, "reason": "insufficient_storage_resources", "resource_type": resource_type, "amount": amount}
+	for deduction: Dictionary in deductions:
+		var storage_id: String = String(deduction.get("storage_id", ""))
+		var component: Dictionary = _storage_components[storage_id]
+		var contents: Dictionary = component.get("contents", {}).duplicate(true)
+		contents[resource_type] = int(contents.get(resource_type, 0)) - int(deduction.get("amount", 0))
+		component["contents"] = contents
+		_storage_components[storage_id] = component
+	resource_total_changed.emit(resource_type, get_resource_total(resource_type))
+	storage_capacity_changed.emit(get_storage_capacity(), get_stored_resource_total())
+	return {"ok": true, "reason": "consumed", "resource_type": resource_type, "amount": amount}
+
+func _build_construction_material_result(ok: bool, reason: String, site_id: String, allocations: Array) -> Dictionary:
+	return {
+		"ok": ok,
+		"reason": reason,
+		"construction_site_id": site_id,
+		"allocations": allocations.duplicate(true),
+	}
+
+func _reserve_storage_component_capacity(reservation_id: String, storage_id: String, amount: int) -> Dictionary:
+	if reservation_id.is_empty():
+		return _build_storage_component_reservation_result(false, "empty_reservation_id", reservation_id, storage_id, amount)
+	if not _storage_components.has(storage_id):
+		return _build_storage_component_reservation_result(false, "unknown_storage_id", reservation_id, storage_id, amount)
+	if amount <= 0:
+		return _build_storage_component_reservation_result(false, "invalid_amount", reservation_id, storage_id, amount)
+	if _storage_component_reservations.has(reservation_id):
+		return _build_storage_component_reservation_result(false, "duplicate_reservation_id", reservation_id, storage_id, amount)
+	if _get_storage_component_available_capacity(storage_id) < amount:
+		return _build_storage_component_reservation_result(false, "insufficient_storage_capacity", reservation_id, storage_id, amount)
+	_storage_component_reservations[reservation_id] = {
+		"reservation_id": reservation_id,
+		"storage_id": storage_id,
+		"amount": amount,
+	}
+	return _build_storage_component_reservation_result(true, "reserved", reservation_id, storage_id, amount)
+
+func _validate_storage_component_reservation(reservation_id: String, storage_id: String, amount: int) -> Dictionary:
+	if not _storage_component_reservations.has(reservation_id):
+		return _build_storage_component_reservation_result(false, "unknown_reservation_id", reservation_id, storage_id, amount)
+	var reservation: Dictionary = _storage_component_reservations[reservation_id]
+	if String(reservation.get("storage_id", "")) != storage_id:
+		return _build_storage_component_reservation_result(false, "storage_id_mismatch", reservation_id, storage_id, amount)
+	if int(reservation.get("amount", 0)) != amount or amount <= 0:
+		return _build_storage_component_reservation_result(false, "reserved_amount_mismatch", reservation_id, storage_id, amount)
+	if not _storage_components.has(storage_id):
+		return _build_storage_component_reservation_result(false, "unknown_storage_id", reservation_id, storage_id, amount)
+	return _build_storage_component_reservation_result(true, "valid", reservation_id, storage_id, amount)
+
+func _consume_storage_component_reservation(reservation_id: String, storage_id: String, resource_type: String, amount: int) -> Dictionary:
+	var validation: Dictionary = _validate_storage_component_reservation(reservation_id, storage_id, amount)
+	if not bool(validation.get("ok", false)):
+		return validation
+	if resource_type.is_empty():
+		return _build_storage_component_reservation_result(false, "empty_resource_type", reservation_id, storage_id, amount)
+	var component: Dictionary = _storage_components[storage_id]
+	var contents: Dictionary = component.get("contents", {}).duplicate(true)
+	contents[resource_type] = int(contents.get(resource_type, 0)) + amount
+	component["contents"] = contents
+	_storage_components[storage_id] = component
+	_storage_component_reservations.erase(reservation_id)
+	resource_total_changed.emit(resource_type, get_resource_total(resource_type))
+	storage_capacity_changed.emit(get_storage_capacity(), get_stored_resource_total())
+	return _build_storage_component_reservation_result(true, "consumed", reservation_id, storage_id, amount)
+
+func _release_storage_component_reservation(reservation_id: String) -> Dictionary:
+	if not _storage_component_reservations.has(reservation_id):
+		return _build_storage_component_reservation_result(false, "unknown_reservation_id", reservation_id, "", 0)
+	var reservation: Dictionary = _storage_component_reservations[reservation_id]
+	_storage_component_reservations.erase(reservation_id)
+	return _build_storage_component_reservation_result(true, "released", reservation_id, String(reservation.get("storage_id", "")), int(reservation.get("amount", 0)))
+
+func _get_storage_component_available_capacity(storage_id: String) -> int:
+	if not _storage_components.has(storage_id):
+		return 0
+	var component: Dictionary = _storage_components[storage_id]
+	return maxi(int(component.get("capacity", 0)) - _get_storage_component_stored_total(storage_id) - _get_storage_component_reserved_amount(storage_id), 0)
+
+func _get_storage_component_stored_total(storage_id: String) -> int:
+	if not _storage_components.has(storage_id):
+		return 0
+	var stored: int = 0
+	for amount: Variant in (_storage_components[storage_id] as Dictionary).get("contents", {}).values():
+		stored += int(amount)
+	return stored
+
+func _get_storage_component_reserved_amount(storage_id: String) -> int:
+	var reserved: int = 0
+	for reservation: Variant in _storage_component_reservations.values():
+		var reservation_data: Dictionary = reservation
+		if String(reservation_data.get("storage_id", "")) == storage_id:
+			reserved += int(reservation_data.get("amount", 0))
+	return reserved
+
+func _get_storage_component_resource_total(resource_type: String) -> int:
+	var total: int = 0
+	for component: Variant in _storage_components.values():
+		total += int((component as Dictionary).get("contents", {}).get(resource_type, 0))
+	return total
+
+func _get_all_storage_component_stored_total() -> int:
+	var total: int = 0
+	for storage_id_value: Variant in _storage_components.keys():
+		total += _get_storage_component_stored_total(String(storage_id_value))
+	return total
+
 func _restore_reserved_haul_item(reservation: Dictionary, cell: Vector2i) -> void:
 	var item: Dictionary = reservation.get("item", {})
 	var restore_result: Dictionary = create_ground_item(String(item.get("resource_type", "")), int(item.get("amount", 0)), cell)
@@ -979,7 +1369,11 @@ func _restore_reserved_haul_item(reservation: Dictionary, cell: Vector2i) -> voi
 
 func _release_haul_storage_reservation(reservation: Dictionary) -> void:
 	var reservation_id: String = String(reservation.get("storage_reservation_id", ""))
-	if not reservation_id.is_empty() and _resource_stockpile.has_storage_reservation(reservation_id):
+	if reservation_id.is_empty():
+		return
+	if String(reservation.get("destination_kind", "")) == "storage_component":
+		_release_storage_component_reservation(reservation_id)
+	elif _resource_stockpile.has_storage_reservation(reservation_id):
 		_resource_stockpile.release_storage_reservation(reservation_id)
 
 func _haul_item_matches(first: Dictionary, second: Dictionary) -> bool:
@@ -994,7 +1388,7 @@ func export_construction_sites() -> Array[Dictionary]:
 		var occupied_entries: Array[Dictionary] = []
 		for cell: Vector2i in site.get("occupied_cells", []):
 			occupied_entries.append(_serialize_cell(cell))
-		entries.append({
+		var entry := {
 			"site_id": String(site.get("site_id", "")),
 			"building_id": String(site.get("building_id", "")),
 			"origin_cell": _serialize_cell(site.get("origin_cell", Vector2i.ZERO)),
@@ -1005,7 +1399,11 @@ func export_construction_sites() -> Array[Dictionary]:
 			"build_progress": float(site.get("build_progress", 0.0)),
 			"build_time": float(site.get("build_time", 0.0)),
 			"completed": bool(site.get("completed", false)),
-		})
+		}
+		var storage_id: String = _build_storage_component_id(String(site.get("site_id", "")))
+		if _storage_components.has(storage_id):
+			entry["storage_contents"] = (_storage_components[storage_id] as Dictionary).get("contents", {}).duplicate(true)
+		entries.append(entry)
 	return entries
 
 func import_construction_sites(entries: Array) -> Dictionary:
@@ -1054,6 +1452,7 @@ func import_construction_sites(entries: Array) -> Dictionary:
 			"build_progress": float(entry_dict.get("build_progress", 0.0)),
 			"build_time": float(entry_dict.get("build_time", definition.get("build_time", 0.0))),
 			"completed": bool(entry_dict.get("completed", false)),
+			"storage_contents": entry_dict.get("storage_contents", {}).duplicate(true),
 		}
 		imported_sites[site_id] = site
 		for cell: Vector2i in footprint_cells:
@@ -1061,6 +1460,9 @@ func import_construction_sites(entries: Array) -> Dictionary:
 	_construction_sites = imported_sites
 	_occupied_construction_cells = imported_occupied_cells
 	_construction_reservations.clear()
+	_construction_material_reservations.clear()
+	_storage_components.clear()
+	_storage_component_reservations.clear()
 	_resource_stockpile.clear_resource_reservations()
 	_refresh_storage_capacity()
 	construction_sites_replaced.emit()
@@ -1332,31 +1734,42 @@ func request_consume_food(colonist_id: String, amount: int = 1) -> Dictionary:
 		return _build_food_consumption_result(false, "empty_colonist_id", colonist_id, amount, 0)
 	if amount <= 0:
 		return _build_food_consumption_result(false, "invalid_amount", colonist_id, amount, 0)
-	if _resource_stockpile == null:
-		return _build_food_consumption_result(false, "stockpile_unavailable", colonist_id, amount, 0)
-	var spend_result: Dictionary = _resource_stockpile.request_spend_resources({"food": amount})
+	var spend_result: Dictionary
+	if _storage_components.is_empty():
+		if _resource_stockpile == null:
+			return _build_food_consumption_result(false, "stockpile_unavailable", colonist_id, amount, 0)
+		spend_result = _resource_stockpile.request_spend_resources({"food": amount})
+	else:
+		spend_result = _consume_storage_resource("food", amount)
 	if not bool(spend_result.get("ok", false)):
 		return _build_food_consumption_result(false, String(spend_result.get("reason", "spend_failed")), colonist_id, amount, 0)
 	return _build_food_consumption_result(true, "consumed", colonist_id, amount, amount)
 
 func get_resource_total(resource_type: String) -> int:
 	if _resource_stockpile == null:
-		return 0
-	return _resource_stockpile.get_total(resource_type)
+		return _get_storage_component_resource_total(resource_type)
+	return _resource_stockpile.get_total(resource_type) + _get_storage_component_resource_total(resource_type)
 
 func get_resource_totals() -> Dictionary:
-	if _resource_stockpile == null:
-		return {}
-	return _resource_stockpile.get_totals()
+	var totals: Dictionary = _resource_stockpile.get_totals() if _resource_stockpile != null else {}
+	for component: Variant in _storage_components.values():
+		var contents: Dictionary = (component as Dictionary).get("contents", {})
+		for resource_type: Variant in contents.keys():
+			var key: String = String(resource_type)
+			totals[key] = int(totals.get(key, 0)) + int(contents[resource_type])
+	return totals
 
 func get_storage_capacity() -> int:
 	return _resource_stockpile.get_storage_capacity() if _resource_stockpile != null else 0
 
 func get_stored_resource_total() -> int:
-	return _resource_stockpile.get_stored_total() if _resource_stockpile != null else 0
+	return (_resource_stockpile.get_stored_total() if _resource_stockpile != null else 0) + _get_all_storage_component_stored_total()
 
 func get_storage_state() -> Dictionary:
-	return _resource_stockpile.get_storage_state() if _resource_stockpile != null else {"stored": 0, "capacity": 0, "reserved": 0, "available": 0, "over_capacity": false}
+	var state: Dictionary = _resource_stockpile.get_storage_state() if _resource_stockpile != null else {"stored": 0, "capacity": 0, "reserved": 0, "available": 0, "over_capacity": false}
+	state["stored"] = get_stored_resource_total()
+	state["over_capacity"] = int(state.get("stored", 0)) > int(state.get("capacity", 0))
+	return state
 
 func export_state() -> Dictionary:
 	return {
@@ -1480,6 +1893,7 @@ func _rebuild_storage_components() -> void:
 		if capacity <= 0:
 			continue
 		var storage_id: String = _build_storage_component_id(String(site.get("site_id", "")))
+		var previous_contents: Dictionary = (_storage_components.get(storage_id, {}) as Dictionary).get("contents", site.get("storage_contents", {})).duplicate(true)
 		rebuilt[storage_id] = {
 			"storage_id": storage_id,
 			"construction_site_id": String(site.get("site_id", "")),
@@ -1487,9 +1901,16 @@ func _rebuild_storage_components() -> void:
 			"origin_cell": site.get("origin_cell", Vector2i.ZERO),
 			"occupied_cells": site.get("occupied_cells", []).duplicate(),
 			"capacity": capacity,
-			"contents": {},
+			"contents": previous_contents,
 		}
 	_storage_components = rebuilt
+	var stale_reservation_ids: Array[String] = []
+	for reservation_id: Variant in _storage_component_reservations.keys():
+		var reservation: Dictionary = _storage_component_reservations[reservation_id]
+		if not _storage_components.has(String(reservation.get("storage_id", ""))):
+			stale_reservation_ids.append(String(reservation_id))
+	for reservation_id: String in stale_reservation_ids:
+		_storage_component_reservations.erase(reservation_id)
 
 func _copy_storage_component(component: Dictionary) -> Dictionary:
 	return {
@@ -1500,6 +1921,8 @@ func _copy_storage_component(component: Dictionary) -> Dictionary:
 		"occupied_cells": component.get("occupied_cells", []).duplicate(),
 		"capacity": int(component.get("capacity", 0)),
 		"contents": component.get("contents", {}).duplicate(true),
+		"reserved": _get_storage_component_reserved_amount(String(component.get("storage_id", ""))),
+		"available": _get_storage_component_available_capacity(String(component.get("storage_id", ""))),
 	}
 
 func _build_storage_component_id(site_id: String) -> String:
@@ -1574,8 +1997,22 @@ func _build_haul_result(ok: bool, reason: String, item_id: String, colonist_id: 
 		"colonist_id": colonist_id,
 		"item": item.duplicate(true),
 		"destination_cell": reservation.get("destination_cell", Vector2i.ZERO),
+		"destination_kind": String(reservation.get("destination_kind", "")),
+		"storage_id": String(reservation.get("storage_id", "")),
+		"storage_reservation_id": String(reservation.get("storage_reservation_id", "")),
 		"reserved_by_colonist_id": String(reservation.get("reserved_by_colonist_id", "")),
 		"picked_up": bool(reservation.get("picked_up", false)),
+	}
+
+func _build_storage_component_reservation_result(ok: bool, reason: String, reservation_id: String, storage_id: String, amount: int) -> Dictionary:
+	return {
+		"ok": ok,
+		"reason": reason,
+		"reservation_id": reservation_id,
+		"storage_id": storage_id,
+		"amount": amount,
+		"reserved_storage": _get_storage_component_reserved_amount(storage_id),
+		"available_storage": _get_storage_component_available_capacity(storage_id),
 	}
 
 func _build_import_result(ok: bool, reason: String) -> Dictionary:

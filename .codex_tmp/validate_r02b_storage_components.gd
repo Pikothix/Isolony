@@ -43,7 +43,7 @@ func _run() -> void:
 
 	if not _validate_component_lifecycle():
 		return
-	if not _validate_existing_global_stockpile_paths():
+	if not _validate_existing_aggregate_paths():
 		return
 	if not await _validate_save_load_reconstruction():
 		return
@@ -117,7 +117,7 @@ func _validate_component_lifecycle() -> bool:
 	return true
 
 
-func _validate_existing_global_stockpile_paths() -> bool:
+func _validate_existing_aggregate_paths() -> bool:
 	if not _require(bool(_world_state.add_resource("wood", 20).get("ok", false)), "could not add Wood for compatibility checks"):
 		return false
 	var wood_before_construction: int = _world_state.get_resource_total("wood")
@@ -146,12 +146,12 @@ func _validate_existing_global_stockpile_paths() -> bool:
 	var destination: Vector2i = reserve_result.get("destination_cell", Vector2i.ZERO)
 	var wood_before_deposit: int = _world_state.get_resource_total("wood")
 	var deposit_result: Dictionary = _world_state.request_deposit_carried_item("r02b_validator", pickup_result.get("item", {}), destination)
-	if not _require(bool(reserve_result.get("ok", false)) and bool(pickup_result.get("ok", false)) and bool(deposit_result.get("ok", false)), "haul global stockpile path failed"):
+	if not _require(bool(reserve_result.get("ok", false)) and bool(pickup_result.get("ok", false)) and bool(deposit_result.get("ok", false)), "haul compatibility path failed"):
 		return false
-	if not _require(_world_state.get_resource_total("wood") == wood_before_deposit + 5, "haul deposit no longer writes ResourceStockpile Wood"):
+	if not _require(_world_state.get_resource_total("wood") == wood_before_deposit + 5, "haul deposit no longer updates aggregate Wood"):
 		return false
-	var component_after_deposit: Dictionary = _world_state.get_storage_component(_build_storage_id_for_any_component())
-	if not _require((component_after_deposit.get("contents", {}) as Dictionary).is_empty(), "haul deposit unexpectedly wrote R02B component contents"):
+	var component_after_deposit: Dictionary = _world_state.get_storage_component(String(reserve_result.get("storage_id", "")))
+	if not _require(int((component_after_deposit.get("contents", {}) as Dictionary).get("wood", 0)) == 5, "haul deposit did not write Storehouse component contents"):
 		return false
 	return true
 
@@ -218,7 +218,6 @@ func _find_valid_building_origin(building_id: String, origin: Vector2i, excluded
 					return candidate
 	return INVALID_CELL
 
-
 func _footprint_cells(building_id: String, origin: Vector2i) -> Array[Vector2i]:
 	var cells: Array[Vector2i] = []
 	var footprint: Vector2i = BuildingDefinitionRef.get_definition(building_id).get("footprint", Vector2i.ONE)
@@ -250,8 +249,3 @@ func _find_valid_zone_cell(origin: Vector2i, excluded: Array[Vector2i] = []) -> 
 				if bool(tile.get("walkable", false)) and terrain != "WATER" and terrain != "ROCK_WALL" and not bool(tile.get("mineable", false)) and _world_state.get_construction_site_at_cell(cell).is_empty() and not _chunk_manager.is_cell_blocked_by_resource(cell):
 					return cell
 	return INVALID_CELL
-
-
-func _build_storage_id_for_any_component() -> String:
-	var components: Array[Dictionary] = _world_state.get_storage_components()
-	return String(components[0].get("storage_id", "")) if not components.is_empty() else ""

@@ -9,13 +9,11 @@ const BuildingDefinitionRef = preload("res://scripts/buildings/building_definiti
 
 signal building_requested(building_id: String)
 signal harvest_mode_requested
-signal stockpile_mode_requested
 signal cancel_mode_requested
 
 @onready var _architect_button: Button = $MarginContainer/VBoxContainer/ToolbarButtons/ArchitectButton
 @onready var _work_button: Button = $MarginContainer/VBoxContainer/ToolbarButtons/WorkButton
 @onready var _harvest_button: Button = $MarginContainer/VBoxContainer/ToolbarButtons/HarvestButton
-@onready var _stockpile_button: Button = $MarginContainer/VBoxContainer/ToolbarButtons/StockpileButton
 @onready var _cancel_button: Button = $MarginContainer/VBoxContainer/ToolbarButtons/CancelButton
 @onready var _mode_label: Label = $MarginContainer/VBoxContainer/ModeLabel
 @onready var _architect_menu: PanelContainer = $"../ArchitectMenu"
@@ -30,7 +28,6 @@ func _ready() -> void:
 	_architect_button.pressed.connect(_on_architect_pressed)
 	_work_button.pressed.connect(_on_work_pressed)
 	_harvest_button.pressed.connect(_on_harvest_pressed)
-	_stockpile_button.pressed.connect(_on_stockpile_pressed)
 	_cancel_button.pressed.connect(_on_cancel_pressed)
 	set_architect_menu_open(false)
 	set_work_panel_open(false)
@@ -91,11 +88,6 @@ func _on_work_pressed() -> void:
 func _on_harvest_pressed() -> void:
 	close_submenus()
 	harvest_mode_requested.emit()
-
-
-func _on_stockpile_pressed() -> void:
-	close_submenus()
-	stockpile_mode_requested.emit()
 
 
 func _on_cancel_pressed() -> void:

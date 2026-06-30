@@ -45,6 +45,8 @@ const JOB_TYPE_CONSTRUCT := "construct"
 const JOB_TYPE_HARVEST := "harvest"
 const JOB_TYPE_HAUL := "haul"
 const JOB_CANDIDATE_LIMIT := 16
+const JOB_EVALUATION_INTERVAL := 0.25
+const JOB_EVALUATION_STAGGER_SLOTS := 8
 const DEFAULT_WORK_PRIORITIES := {
 	"Construct": 2,
 	"Harvest": 2,
@@ -131,6 +133,8 @@ var _current_path: Array[Vector2i] = []
 var _path_index: int = 0
 var _target_position: Vector2 = Vector2.ZERO
 var _pause_timer: float = 0.0
+var _job_evaluation_cooldown_remaining: float = 0.0
+var _job_scheduling_counters: Dictionary = {}
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _is_environment_warm: bool = false
 var _is_environment_sheltered: bool = false
@@ -172,6 +176,8 @@ func initialize(
 	target_cell = spawn_cell
 	global_position = chunk_manager.get_cell_world_position(spawn_cell) + Vector2(0, -6)
 	_enter_idle()
+	_set_initial_job_evaluation_stagger()
+	reset_job_scheduling_debug_counters()
 	_update_needs_label()
 
 func _process(delta: float) -> void:
@@ -196,6 +202,24 @@ func _process(delta: float) -> void:
 
 func get_activity_name() -> String:
 	return Activity.keys()[_activity].to_lower()
+
+func get_job_scheduling_debug_counters() -> Dictionary:
+	## Expose transient scheduling cost without making diagnostics part of gameplay authority.
+	var snapshot: Dictionary = _job_scheduling_counters.duplicate(true)
+	snapshot["cooldown_remaining"] = _job_evaluation_cooldown_remaining
+	snapshot["cooldown_interval"] = JOB_EVALUATION_INTERVAL
+	return snapshot
+
+func reset_job_scheduling_debug_counters() -> void:
+	_job_scheduling_counters = {
+		"job_evaluations_attempted": 0,
+		"candidates_considered": 0,
+		"path_queries_requested": 0,
+		"path_queries_succeeded": 0,
+		"path_queries_failed": 0,
+		"reservations_attempted": 0,
+		"reservations_succeeded": 0,
+	}
 
 func get_full_name() -> String:
 	return (first_name + " " + last_name).strip_edges()
@@ -439,6 +463,8 @@ func _reset_transient_state() -> void:
 	_target_position = global_position
 	set_selected(false)
 	_enter_idle()
+	_job_evaluation_cooldown_remaining = 0.0
+	reset_job_scheduling_debug_counters()
 
 func _update_needs(delta: float) -> void:
 	if world_state == null or delta <= 0.0:
@@ -485,6 +511,7 @@ func _update_needs_label() -> void:
 	_needs_label.modulate = Color(0.65, 1.0, 0.68) if lowest_need >= 65.0 else (Color(1.0, 0.86, 0.35) if lowest_need >= 35.0 else Color(1.0, 0.38, 0.32))
 
 func _process_idle(delta: float) -> void:
+	_job_evaluation_cooldown_remaining = maxf(_job_evaluation_cooldown_remaining - delta, 0.0)
 	_pause_timer -= delta
 	if _pause_timer > 0.0:
 		return
@@ -492,24 +519,30 @@ func _process_idle(delta: float) -> void:
 		return
 	if _try_start_eating():
 		return
+	if _job_evaluation_cooldown_remaining > 0.0:
+		return
+	_job_evaluation_cooldown_remaining = JOB_EVALUATION_INTERVAL
 	if _try_start_prioritized_work():
 		return
 	_pick_new_wander_target()
 
 func _try_start_prioritized_work() -> bool:
+	_increment_job_scheduling_counter("job_evaluations_attempted")
 	var job: Dictionary = choose_best_job(collect_available_jobs())
 	return not job.is_empty() and start_job(job)
 
 func collect_available_jobs() -> Array[Dictionary]:
 	## Project reachable focused WorldState work sources into transient, non-authoritative candidates.
 	## Source order is the stable tie-break: construction, then harvest, then haul.
+	## One reachable candidate per work type is sufficient because reservation follows immediately on the main thread.
 	var jobs: Array[Dictionary] = []
 	if world_state == null or colonist_id.is_empty():
 		return jobs
 	if can_do_work("Construct"):
 		for site: Dictionary in world_state.get_available_construction_sites(JOB_CANDIDATE_LIMIT):
+			_increment_job_scheduling_counter("candidates_considered")
 			var site_cell: Vector2i = site.get("origin_cell", current_cell)
-			var site_path: Dictionary = _query_path(site_cell, true, false)
+			var site_path: Dictionary = _query_job_path(current_cell, site_cell, {"allow_target_construction": true})
 			if not bool(site_path.get("reachable", false)):
 				continue
 			jobs.append({
@@ -519,10 +552,12 @@ func collect_available_jobs() -> Array[Dictionary]:
 				"target_cell": site_cell,
 				"reservation_result": {},
 			})
+			break
 	if can_do_work("Harvest"):
 		for order: Dictionary in world_state.get_available_harvest_orders(JOB_CANDIDATE_LIMIT):
+			_increment_job_scheduling_counter("candidates_considered")
 			var order_cell: Vector2i = order.get("cell", current_cell)
-			var order_path: Dictionary = _query_path(order_cell, false, true)
+			var order_path: Dictionary = _query_job_path(current_cell, order_cell, {"allow_target_resource": true})
 			if not bool(order_path.get("reachable", false)):
 				continue
 			jobs.append({
@@ -532,14 +567,16 @@ func collect_available_jobs() -> Array[Dictionary]:
 				"target_cell": order_cell,
 				"reservation_result": {},
 			})
+			break
 	if can_do_work("Haul"):
 		for item: Dictionary in world_state.get_available_haul_items(colonist_id, JOB_CANDIDATE_LIMIT):
+			_increment_job_scheduling_counter("candidates_considered")
 			var item_cell: Vector2i = item.get("cell", current_cell)
 			var destination_cell: Vector2i = item.get("destination_cell", current_cell)
-			var pickup_path: Dictionary = _query_path(item_cell, false, false)
+			var pickup_path: Dictionary = _query_job_path(current_cell, item_cell)
 			if not bool(pickup_path.get("reachable", false)):
 				continue
-			var deposit_path: Dictionary = ReachabilityQueryRef.find_path(chunk_manager, world_state, item_cell, destination_cell)
+			var deposit_path: Dictionary = _query_job_path(item_cell, destination_cell)
 			if not bool(deposit_path.get("reachable", false)):
 				continue
 			jobs.append({
@@ -550,6 +587,7 @@ func collect_available_jobs() -> Array[Dictionary]:
 				"destination_cell": destination_cell,
 				"reservation_result": {},
 			})
+			break
 	return jobs
 
 func choose_best_job(candidates: Array[Dictionary]) -> Dictionary:
@@ -584,7 +622,7 @@ func start_job(job: Dictionary) -> bool:
 				_release_job_candidate_reservation(job, "construction_start_validation_failed")
 				return false
 			var construction_target: Vector2i = job.get("target_cell", current_cell)
-			var construction_path: Dictionary = _query_path(construction_target, true, false)
+			var construction_path: Dictionary = _query_job_path(current_cell, construction_target, {"allow_target_construction": true})
 			if not bool(construction_path.get("reachable", false)):
 				_release_job_candidate_reservation(job, "construction_path_unreachable")
 				return false
@@ -598,7 +636,7 @@ func start_job(job: Dictionary) -> bool:
 				_release_job_candidate_reservation(job, "harvest_start_validation_failed")
 				return false
 			var harvest_target: Vector2i = job.get("target_cell", current_cell)
-			var harvest_path: Dictionary = _query_path(harvest_target, false, true)
+			var harvest_path: Dictionary = _query_job_path(current_cell, harvest_target, {"allow_target_resource": true})
 			if not bool(harvest_path.get("reachable", false)):
 				_release_job_candidate_reservation(job, "harvest_path_unreachable")
 				return false
@@ -616,8 +654,8 @@ func start_job(job: Dictionary) -> bool:
 			var haul_item: Dictionary = haul_reservation.get("item", {})
 			var pickup_cell: Vector2i = haul_item.get("cell", job.get("target_cell", current_cell))
 			var deposit_cell: Vector2i = haul_reservation.get("destination_cell", current_cell)
-			var pickup_path: Dictionary = _query_path(pickup_cell, false, false)
-			var deposit_path: Dictionary = ReachabilityQueryRef.find_path(chunk_manager, world_state, pickup_cell, deposit_cell)
+			var pickup_path: Dictionary = _query_job_path(current_cell, pickup_cell)
+			var deposit_path: Dictionary = _query_job_path(pickup_cell, deposit_cell)
 			if not bool(pickup_path.get("reachable", false)) or not bool(deposit_path.get("reachable", false)):
 				_release_job_candidate_reservation(job, "haul_path_unreachable")
 				return false
@@ -635,17 +673,23 @@ func _reserve_job_candidate(candidate: Dictionary) -> Dictionary:
 	if world_state == null or colonist_id.is_empty():
 		return {"ok": false, "reason": "job_authority_unavailable"}
 	var target_id: String = String(candidate.get("target_id", ""))
+	var result: Dictionary = {"ok": false, "reason": "invalid_job_candidate"}
 	match String(candidate.get("job_type", "")):
 		JOB_TYPE_CONSTRUCT:
 			if can_do_work("Construct") and not target_id.is_empty():
-				return world_state.reserve_construction_site(colonist_id, target_id)
+				_increment_job_scheduling_counter("reservations_attempted")
+				result = world_state.reserve_construction_site(colonist_id, target_id)
 		JOB_TYPE_HARVEST:
 			if can_do_work("Harvest") and not target_id.is_empty():
-				return world_state.reserve_harvest_order(target_id, colonist_id)
+				_increment_job_scheduling_counter("reservations_attempted")
+				result = world_state.reserve_harvest_order(target_id, colonist_id)
 		JOB_TYPE_HAUL:
 			if can_do_work("Haul") and not target_id.is_empty():
-				return world_state.reserve_haul_item(target_id, colonist_id)
-	return {"ok": false, "reason": "invalid_job_candidate"}
+				_increment_job_scheduling_counter("reservations_attempted")
+				result = world_state.reserve_haul_item(target_id, colonist_id)
+	if bool(result.get("ok", false)):
+		_increment_job_scheduling_counter("reservations_succeeded")
+	return result
 
 func _release_job_candidate_reservation(job: Dictionary, reason: String) -> void:
 	if world_state == null or colonist_id.is_empty():
@@ -668,6 +712,24 @@ func _query_path(cell: Vector2i, allow_target_construction: bool = false, allow_
 		"allow_target_construction": allow_target_construction,
 		"allow_target_resource": allow_target_resource,
 	})
+
+func _query_job_path(start_cell: Vector2i, destination_cell: Vector2i, options: Dictionary = {}) -> Dictionary:
+	_increment_job_scheduling_counter("path_queries_requested")
+	var result: Dictionary = ReachabilityQueryRef.find_path(chunk_manager, world_state, start_cell, destination_cell, options)
+	_increment_job_scheduling_counter("path_queries_succeeded" if bool(result.get("reachable", false)) else "path_queries_failed")
+	return result
+
+func _increment_job_scheduling_counter(counter_name: String) -> void:
+	_job_scheduling_counters[counter_name] = int(_job_scheduling_counters.get(counter_name, 0)) + 1
+
+func _set_initial_job_evaluation_stagger() -> void:
+	## Stable id hashing spreads initial work scans without introducing simulation randomness.
+	var slot: int = 0
+	for index in range(colonist_id.length()):
+		slot = (slot * 31 + colonist_id.unicode_at(index)) % JOB_EVALUATION_STAGGER_SLOTS
+	var offset: float = JOB_EVALUATION_INTERVAL * float(slot) / float(JOB_EVALUATION_STAGGER_SLOTS)
+	_job_evaluation_cooldown_remaining = offset
+	_pause_timer = offset
 
 func _apply_path(path_result: Dictionary, final_cell: Vector2i) -> void:
 	_current_path.clear()
@@ -766,6 +828,7 @@ func _set_need_seeking_target(activity: Activity, cell: Vector2i) -> bool:
 
 func _process_need_seeking(delta: float) -> void:
 	if world_state == null or not world_state.is_night():
+		_job_evaluation_cooldown_remaining = 0.0
 		_enter_idle()
 		return
 	var seeking_warmth: bool = _activity == Activity.SEEKING_WARMTH
@@ -773,12 +836,14 @@ func _process_need_seeking(delta: float) -> void:
 	var in_effect: bool = world_state.is_cell_warmed(current_cell) if seeking_warmth else world_state.is_cell_sheltered(current_cell)
 	if in_effect:
 		if need_value >= need_seek_recovery_threshold:
+			_job_evaluation_cooldown_remaining = 0.0
 			_enter_idle()
 		return
 	var target_still_valid: bool = world_state.is_cell_warmed(target_cell) if seeking_warmth else world_state.is_cell_sheltered(target_cell)
 	if not target_still_valid:
 		var retargeted: bool = _try_seek_warmth() if seeking_warmth else _try_seek_shelter()
 		if not retargeted:
+			_job_evaluation_cooldown_remaining = 0.0
 			_enter_idle()
 		return
 	_move_towards_target(delta)
@@ -936,6 +1001,7 @@ func _finish_construction_job(reason: String = "construction_abandoned") -> void
 		world_state.release_construction_reservation(_construction_site_id, colonist_id, reason)
 	_construction_site_id = ""
 	_construction_travel_elapsed = 0.0
+	_job_evaluation_cooldown_remaining = 0.0
 	_enter_idle()
 
 func _finish_harvest_job(reason: String = "harvest_abandoned") -> void:
@@ -944,6 +1010,7 @@ func _finish_harvest_job(reason: String = "harvest_abandoned") -> void:
 	_harvest_order_id = ""
 	_harvest_travel_elapsed = 0.0
 	_harvest_work_elapsed = 0.0
+	_job_evaluation_cooldown_remaining = 0.0
 	_enter_idle()
 
 func _finish_haul_job(reason: String = "haul_abandoned", deposited: bool = false) -> void:
@@ -958,6 +1025,7 @@ func _finish_haul_job(reason: String = "haul_abandoned", deposited: bool = false
 	_haul_destination_cell = Vector2i.ZERO
 	_haul_travel_elapsed = 0.0
 	_carried_item.clear()
+	_job_evaluation_cooldown_remaining = 0.0
 	_enter_idle()
 
 func _enter_idle() -> void:

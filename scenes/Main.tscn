@@ -11,6 +11,7 @@
 [ext_resource type="Script" path="res://scripts/ui/colonist_info_panel.gd" id="13_colonist_info_panel"]
 [ext_resource type="Script" path="res://scripts/ui/bottom_toolbar.gd" id="14_bottom_toolbar"]
 [ext_resource type="Script" path="res://scripts/ui/work_priority_table.gd" id="15_work_priority_table"]
+[ext_resource type="Script" path="res://scripts/ui/storage_inspector_panel.gd" id="16_storage_inspector_panel"]
 
 [node name="Main" type="Node2D" unique_id=1855439718]
 script = ExtResource("1_main_script")
@@ -246,11 +247,6 @@ custom_minimum_size = Vector2(130, 36)
 layout_mode = 2
 text = "Harvest  [H]"
 
-[node name="StockpileButton" type="Button" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer/ToolbarButtons"]
-custom_minimum_size = Vector2(150, 36)
-layout_mode = 2
-text = "Stockpile Zone  [Z]"
-
 [node name="CancelButton" type="Button" parent="CanvasLayer/BottomToolbar/MarginContainer/VBoxContainer/ToolbarButtons"]
 custom_minimum_size = Vector2(120, 36)
 layout_mode = 2
@@ -268,6 +264,52 @@ offset_bottom = -94.0
 grow_horizontal = 0
 grow_vertical = 0
 script = ExtResource("13_colonist_info_panel")
+
+[node name="StorageInspectorPanel" type="PanelContainer" parent="CanvasLayer"]
+visible = false
+offset_left = 12.0
+offset_top = 188.0
+offset_right = 300.0
+offset_bottom = 392.0
+script = ExtResource("16_storage_inspector_panel")
+
+[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/StorageInspectorPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 8
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/StorageInspectorPanel/MarginContainer"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="TitleLabel" type="Label" parent="CanvasLayer/StorageInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "Storage"
+
+[node name="BuildingNameLabel" type="Label" parent="CanvasLayer/StorageInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "Storehouse"
+
+[node name="CapacityHeaderLabel" type="Label" parent="CanvasLayer/StorageInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Capacity used / capacity"
+
+[node name="CapacityValueLabel" type="Label" parent="CanvasLayer/StorageInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "0 / 100"
+
+[node name="ContentsHeaderLabel" type="Label" parent="CanvasLayer/StorageInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Contents"
+
+[node name="ContentsValueLabel" type="Label" parent="CanvasLayer/StorageInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Empty"
+autowrap_mode = 2
 
 [node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/ColonistInfoPanel"]
 layout_mode = 2

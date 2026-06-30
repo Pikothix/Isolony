@@ -59,6 +59,8 @@ func _run() -> void:
 		return
 	if not _require(bool(_world_state.add_resource("stone", 30).get("ok", false)), "could not seed Stone"):
 		return
+	if not _bootstrap_construction_storage():
+		return
 
 	if not _test_construction_alternative():
 		return
@@ -107,6 +109,26 @@ func _set_priorities(construct_priority: int, harvest_priority: int, haul_priori
 	_worker.set_work_priority("Construct", construct_priority)
 	_worker.set_work_priority("Harvest", harvest_priority)
 	_worker.set_work_priority("Haul", haul_priority)
+
+
+func _bootstrap_construction_storage() -> bool:
+	var origin: Vector2i = _find_reachable_building_origin(_worker.current_cell + Vector2i(0, 14), "storehouse", 3)
+	if not _require(origin != INVALID_CELL, "could not place construction-storage fixture"):
+		return false
+	var placement: Dictionary = _world_state.request_place_construction("storehouse", origin)
+	var site_id := "storehouse:%d:%d" % [origin.x, origin.y]
+	var progress: Dictionary = _world_state.request_progress_construction(site_id, 50.0)
+	if not _require(bool(placement.get("ok", false)) and bool(progress.get("completed", false)), "could not complete construction-storage fixture"):
+		return false
+	var item_cell: Vector2i = _find_reachable_open_cell(_worker.current_cell + Vector2i(4, 4), _worker.current_cell)
+	var item_result: Dictionary = _world_state.create_ground_item("wood", 5, item_cell)
+	if not _require(item_cell != INVALID_CELL and bool(item_result.get("ok", false)), "could not create construction-storage seed item"):
+		return false
+	var item_id: String = String(item_result.get("item_id", ""))
+	var reservation: Dictionary = _world_state.reserve_haul_item(item_id, "j1_storage_seed")
+	var pickup: Dictionary = _world_state.request_pickup_ground_item(item_id, "j1_storage_seed")
+	var deposit: Dictionary = _world_state.request_deposit_carried_item("j1_storage_seed", pickup.get("item", {}), reservation.get("destination_cell", Vector2i.ZERO))
+	return _require(bool(reservation.get("ok", false)) and bool(pickup.get("ok", false)) and bool(deposit.get("ok", false)), "could not seed Storehouse construction materials")
 
 
 func _test_construction_alternative() -> bool:
@@ -203,7 +225,7 @@ func _test_haul_alternative() -> bool:
 	if not _require(bool(zone_result.get("ok", false)), "could not create haul destination"):
 		return false
 	var blocked_cell: Vector2i = _find_open_cluster(_worker.current_cell + Vector2i(-14, 10), [Vector2i.ZERO, Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP])
-	var reachable_cell: Vector2i = _find_haul_item_cell(_worker.current_cell + Vector2i(4, 6), zone_cell)
+	var reachable_cell: Vector2i = _find_reachable_storage_access_cell(_worker.current_cell + Vector2i(4, 6))
 	if not _require(blocked_cell != INVALID_CELL and reachable_cell != INVALID_CELL, "could not find haul item cells"):
 		return false
 	var blocked_item: Dictionary = _world_state.create_ground_item("stone", 1, blocked_cell)
@@ -268,7 +290,7 @@ func _test_priority_and_source_order() -> bool:
 	var site_place: Dictionary = _world_state.request_place_construction("campfire", site_cell)
 	var designation: Dictionary = _world_state.request_designate_harvest(String(resource.get("resource_id", "")))
 	var zone_result: Dictionary = _world_state.request_create_stockpile_zone([zone_cell])
-	var item_cell: Vector2i = _find_haul_item_cell(_worker.current_cell + Vector2i(-4, -6), zone_cell)
+	var item_cell: Vector2i = _find_reachable_storage_access_cell(_worker.current_cell + Vector2i(-4, -6))
 	if not _require(item_cell != INVALID_CELL, "could not find priority haul item cell"):
 		return false
 	var item_result: Dictionary = _world_state.create_ground_item("wood", 1, item_cell)
@@ -394,6 +416,29 @@ func _find_haul_item_cell(origin: Vector2i, destination: Vector2i) -> Vector2i:
 				var deposit: Dictionary = ReachabilityQueryRef.find_path(_chunk_manager, _world_state, candidate, destination)
 				if bool(pickup.get("reachable", false)) and bool(deposit.get("reachable", false)):
 					return candidate
+	return INVALID_CELL
+
+
+func _find_reachable_storage_access_cell(origin: Vector2i) -> Vector2i:
+	var candidates: Array[Vector2i] = []
+	for component: Dictionary in _world_state.get_storage_components():
+		var occupied: Array = component.get("occupied_cells", [])
+		for occupied_cell: Vector2i in occupied:
+			for offset: Vector2i in [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]:
+				var cell: Vector2i = occupied_cell + offset
+				if not occupied.has(cell) and not candidates.has(cell):
+					candidates.append(cell)
+	candidates.sort_custom(func(first: Vector2i, second: Vector2i) -> bool:
+		var first_distance: int = first.distance_squared_to(origin)
+		var second_distance: int = second.distance_squared_to(origin)
+		return first_distance < second_distance if first_distance != second_distance else (first.y < second.y if first.y != second.y else first.x < second.x)
+	)
+	for candidate: Vector2i in candidates:
+		if not _is_open_cell(candidate):
+			continue
+		var path: Dictionary = ReachabilityQueryRef.find_path(_chunk_manager, _world_state, _worker.current_cell, candidate)
+		if bool(path.get("reachable", false)):
+			return candidate
 	return INVALID_CELL
 
 

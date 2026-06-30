@@ -1,7 +1,7 @@
 extends Node2D
 
 ## Purpose: Coordinate the playable scene, transient control tools, and requests into simulation authorities.
-## Responsibility: Own Build/Harvest/Stockpile control modes and previews; toolbar UI emits requests and never owns simulation records.
+## Responsibility: Own active Build/Harvest control modes and previews while retaining dormant legacy stockpile-zone compatibility state.
 ## Assumption: Area designation considers only currently loaded resources and every mutation is validated by WorldState.
 
 const TerrainConfigRef = preload("res://scripts/world/terrain_config.gd")
@@ -16,6 +16,7 @@ const AREA_DRAG_THRESHOLD_PIXELS := 6.0
 @onready var _resource_label: Label = $CanvasLayer/PanelContainer/MarginContainer/ResourceLabel
 @onready var _selected_tile_panel: SelectedTilePanel = $CanvasLayer/SelectedTilePanel
 @onready var _colonist_info_panel: PanelContainer = $CanvasLayer/ColonistInfoPanel
+@onready var _storage_inspector_panel: PanelContainer = $CanvasLayer/StorageInspectorPanel
 @onready var _bottom_toolbar: PanelContainer = $CanvasLayer/BottomToolbar
 @onready var _work_priority_table: PanelContainer = $CanvasLayer/WorkPriorityPanel
 @onready var _colonist_manager: ColonistManager = $ChunkManager/GameplayYSort/ColonistManager
@@ -30,6 +31,7 @@ var _selected_building_id: String = DEFAULT_BUILDING_ID
 var _placement_preview: Node2D
 var _placement_result: Dictionary = {}
 var _selected_colonist: Colonist
+var _selected_storage_id: String = ""
 var drag_start_cell: Vector2i = Vector2i.ZERO
 var drag_current_cell: Vector2i = Vector2i.ZERO
 var is_dragging_harvest_area: bool = false
@@ -57,7 +59,6 @@ func _ready() -> void:
 	_colonist_manager.population_replaced.connect(_on_colonist_population_replaced)
 	_bottom_toolbar.building_requested.connect(_on_building_requested)
 	_bottom_toolbar.harvest_mode_requested.connect(_on_harvest_mode_requested)
-	_bottom_toolbar.stockpile_mode_requested.connect(_on_stockpile_mode_requested)
 	_bottom_toolbar.cancel_mode_requested.connect(_cancel_control_mode)
 	_create_area_drag_preview()
 	_placement_preview = ConstructionSiteVisualScript.new()
@@ -98,6 +99,7 @@ func _on_resource_total_changed(_resource_type: String, _total: int) -> void:
 
 func _on_storage_capacity_changed(_capacity: int, _stored: int) -> void:
 	_update_resource_label()
+	_refresh_selected_storage_inspector()
 
 func _on_time_changed(_day: int, _hour: int, _minute: int) -> void:
 	_update_resource_label()
@@ -125,7 +127,7 @@ func _update_resource_label() -> void:
 			else:
 				action_text += " Zone rejected: %s." % String(_last_stockpile_zone_result.get("reason", "invalid"))
 	else:
-		action_text = "Normal selection. Use the bottom toolbar or B/H/Z shortcuts."
+		action_text = "Normal selection. Use the bottom toolbar or B/H shortcuts."
 	_resource_label.text = "Wood: %d\nStone: %d\nFood: %d\nStorage: %d / %d\nTime: %s (%s)\n%s" % [
 		_world_state.get_resource_total("wood"),
 		_world_state.get_resource_total("stone"),
@@ -145,9 +147,6 @@ func _unhandled_input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 			KEY_H:
 				_set_harvest_mode(not _harvest_mode)
-				get_viewport().set_input_as_handled()
-			KEY_Z:
-				_set_stockpile_mode(not _stockpile_mode)
 				get_viewport().set_input_as_handled()
 			KEY_C:
 				_attempt_progress_construction()
@@ -272,9 +271,6 @@ func _on_building_requested(building_id: String) -> void:
 
 func _on_harvest_mode_requested() -> void:
 	_set_harvest_mode(true)
-
-func _on_stockpile_mode_requested() -> void:
-	_set_stockpile_mode(true)
 
 func _create_area_drag_preview() -> void:
 	## Transient presentation only; the preview never stores or authorizes harvest orders.
@@ -464,9 +460,14 @@ func _attempt_place_selected_tile() -> void:
 
 func _handle_world_selection() -> void:
 	var clicked_colonist: Colonist = _colonist_manager.get_colonist_at_world_position(get_global_mouse_position())
-	_set_selected_colonist(clicked_colonist)
-	if clicked_colonist == null:
-		_attempt_place_selected_tile()
+	if clicked_colonist != null:
+		_set_selected_colonist(clicked_colonist)
+		return
+	_set_selected_colonist(null)
+	var selected_cell: Vector2i = _chunk_manager.world_to_cell(get_global_mouse_position())
+	if _select_storage_at_cell(selected_cell):
+		return
+	_attempt_place_selected_tile()
 
 func _set_selected_colonist(colonist: Colonist) -> void:
 	if _selected_colonist != null and is_instance_valid(_selected_colonist):
@@ -475,9 +476,42 @@ func _set_selected_colonist(colonist: Colonist) -> void:
 	if _selected_colonist == null or not is_instance_valid(_selected_colonist):
 		_colonist_info_panel.clear_selection()
 		return
+	_clear_selected_storage()
 	_selected_colonist.set_selected(true)
 	_colonist_info_panel.display_colonist(_selected_colonist)
+
+func _select_storage_at_cell(cell: Vector2i) -> bool:
+	## Selection is transient; storage data remains owned and queried from WorldState.
+	var site: Dictionary = _world_state.get_construction_site_at_cell(cell)
+	if site.is_empty() or not bool(site.get("completed", false)):
+		_clear_selected_storage()
+		return false
+	var site_id: String = String(site.get("site_id", ""))
+	for component: Dictionary in _world_state.get_storage_components():
+		if String(component.get("construction_site_id", "")) != site_id:
+			continue
+		_selected_storage_id = String(component.get("storage_id", ""))
+		_refresh_selected_storage_inspector()
+		return true
+	_clear_selected_storage()
+	return false
+
+func _clear_selected_storage() -> void:
+	_selected_storage_id = ""
+	_storage_inspector_panel.clear_selection()
+
+func _refresh_selected_storage_inspector() -> void:
+	if _selected_storage_id.is_empty():
+		return
+	var component: Dictionary = _world_state.get_storage_component(_selected_storage_id)
+	if component.is_empty():
+		_clear_selected_storage()
+		return
+	var definition: Dictionary = BuildingDefinitionRef.get_definition(String(component.get("building_id", "")))
+	var building_name: String = String(definition.get("display_name", component.get("building_id", "Storage")))
+	_storage_inspector_panel.display_storage(building_name, component)
 
 func _on_colonist_population_replaced() -> void:
 	## Saved UI selection is intentionally excluded; imported populations begin unselected.
 	_set_selected_colonist(null)
+	_clear_selected_storage()
