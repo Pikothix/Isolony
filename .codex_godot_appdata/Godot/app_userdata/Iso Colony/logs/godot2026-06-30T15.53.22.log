@@ -1,0 +1,5 @@
+Godot Engine v4.7.stable.official.5b4e0cb0f - https://godotengine.org
+
+ERROR: Failed to read the root certificate store.
+   at: get_system_ca_certificates (platform/windows/os_windows.cpp:2582)
+J03 validation passed: bounded reachable loose delivery, exclusive reservation, exact-once consumption, Storehouse priority, bootstrap, and save exclusion

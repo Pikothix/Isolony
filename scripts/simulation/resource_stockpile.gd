@@ -17,9 +17,9 @@ var _reservations: Dictionary = {}
 var _storage_reservations: Dictionary = {}
 var _storage_capacity: int = BASE_STORAGE_CAPACITY
 
-## Purpose: Owns the colony's current resource totals for the simulation layer.
-## Responsibility: Own abstract stored totals, transient resource earmarks/storage-capacity reservations, and atomic validated mutations.
-## Assumption: Ground items live in WorldState and enter these totals only through validated hauling deposits.
+## Purpose: Preserve legacy abstract resource totals and bootstrap compatibility for the simulation layer.
+## Responsibility: Own compatibility totals plus no-Storehouse resource/capacity reservations and atomic validated mutations.
+## Assumption: WorldState routes active hauling, construction, and eating to Storehouse components once any component exists.
 func add_resource(resource_type: String, amount: int) -> int:
 	## Backward-compatible total return; all additions still pass through capacity validation.
 	var result: Dictionary = request_add_resource(resource_type, amount)

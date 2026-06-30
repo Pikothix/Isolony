@@ -19,8 +19,8 @@ This document is a concise map of the current Godot colony sim prototype. It dis
 
 ## Scene And Node Ownership
 
-- `Main` (`scripts/main.gd`): scene coordination, dependency injection, resource/time UI, transient control/area-drag ownership, colonist selection, and construction/harvest/zone request routing.
-- `WorldState` (`scripts/simulation/world_state.gd`): authoritative construction/storage components/harvest orders, stockpile zones, and ground items; bounded deterministic availability snapshots; effect queries; completed-Storehouse capacity derivation; and validated stockpile requests.
+- `Main` (`scripts/main.gd`): scene coordination, dependency injection, resource/time UI, transient control/area-drag ownership, colonist selection, manual Move input translation, and construction/harvest/zone request routing.
+- `WorldState` (`scripts/simulation/world_state.gd`): authoritative construction/storage components/material deliveries/harvest orders, stockpile zones, and ground items; bounded deterministic availability snapshots; effect queries; completed-Storehouse capacity derivation; and validated stockpile requests.
 - `ResourceStockpile` (`scripts/simulation/resource_stockpile.gd`): legacy abstract stored totals/shared capacity, generic capacity reservation support, no-storage construction/eating bootstrap mutations, and notifications.
 - `TimeState` (`scripts/simulation/time_state.gd`): authoritative runtime clock, day/night phase, clock-only pause/scale controls, and time/phase notifications. Colonist movement, work, and needs continue from their own process delta.
 - `SaveGameService` (`scripts/simulation/save_game_service.gd`): non-autoload version `2` coordinator for world/chunk/colonist export and ordered import, currently used only by debug or validation code.
@@ -42,7 +42,7 @@ This document is a concise map of the current Godot colony sim prototype. It dis
 - `ConstructionRoot`: parent for construction-site projections belonging to loaded chunks.
 - `ColonistManager` (`scripts/entities/colonist_manager.gd`): population export/replacement, stable-id relationship resolution, deterministic new-population generation, hit queries, dependency injection, and stale-reservation audit.
 - `ColonistTraitRegistry` (`scripts/entities/colonist_trait_registry.gd`): static trait metadata, conflict exclusions, and bounded modifier values.
-- `Colonist` (`scripts/entities/colonist.gd`): authoritative persistent identity/position/needs/skills/traits/relationships/work priorities plus transient construction/harvest/haul/eating/need-seeking activity, current cell path, and cleanup.
+- `Colonist` (`scripts/entities/colonist.gd`): authoritative persistent identity/position/needs/skills/traits/relationships/work priorities plus transient player Move commands, construction/material-delivery/harvest/haul/eating/need-seeking activity, current cell path, and cleanup.
 - `Camera2D` (`scripts/camera_controller.gd`): camera movement and zoom.
 - UI nodes: resource counter label, selected tile panel, read-only selected colonist info panel, request-only bottom toolbar, and transient Architect submenu.
 
@@ -63,7 +63,7 @@ This document is a concise map of the current Godot colony sim prototype. It dis
 3. Zone records contain `zone_id`, cells, enabled state, and label. A cell index answers membership and preserves overlap invariants; construction placement also rejects indexed zone cells.
 4. Zone signals tell `ChunkManager` to add/remove blue `StockpileZoneVisual` projections for loaded cells. Chunk unload deletes projections only; generation queries the authoritative records and recreates them.
 5. `SaveGameService` stores zones in `deltas.stockpile_zones`. Import restores construction first, then zones, and emits replacement so loaded overlays rebuild.
-6. Zones do not own capacity or items. They remain a temporary legacy Haul fallback when no completed Storehouse storage destination is available; shared legacy capacity and deposit mutation remain in `ResourceStockpile`/`WorldState`.
+6. Zones do not own capacity or items. They remain a temporary legacy Haul fallback only while no completed Storehouse storage component exists; shared legacy capacity and deposit mutation remain in `ResourceStockpile`/`WorldState` for that compatibility path.
 
 ## Asset Replacement Flow
 
@@ -116,8 +116,8 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 ## Hauling Flow
 
 1. Haul uses the general Colonist candidate interface and is disabled by default. The info panel can enable/cycle its priority without owning policy.
-2. `WorldState.get_available_haul_item()` considers enabled loaded items outside enabled zones, then prefers a valid loaded deposit cell adjacent to a completed Storehouse storage component with enough component capacity.
-3. If no Storehouse destination is available, the same query can fall back to a valid loaded stockpile-zone cell with enough `ResourceStockpile` compatibility capacity.
+2. `WorldState.get_available_haul_item()` considers enabled loaded items, treating items inside enabled zones as already stored only while no Storehouse component exists, then selects a valid loaded deposit cell adjacent to a completed Storehouse with enough component capacity.
+3. If no Storehouse component exists, the same query can fall back to a valid loaded stockpile-zone cell with enough `ResourceStockpile` compatibility capacity. Once any component exists, a full or unavailable Storehouse produces no Haul candidate instead of falling back to a zone.
 4. `reserve_haul_item()` reserves the complete item amount against the selected Storehouse component or legacy stockpile capacity and records the worker, destination kind, destination cell, item snapshot, pickup cell, and pickup state transiently.
 5. Colonist movement reaches the item, `request_pickup_ground_item()` removes the ground record/projection, then movement continues to the reserved destination cell.
 6. `request_deposit_carried_item()` revalidates owner, item, destination, selected storage owner, and capacity. Storehouse deposits consume the component reservation and add the complete amount to component contents. Legacy stockpile-zone deposits consume the `ResourceStockpile` capacity reservation and add the complete amount to compatibility totals.
@@ -129,9 +129,11 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 1. `ReachabilityQuery.find_path()` runs a synchronous orthogonal BFS through currently loaded cells, capped at 4,096 visited cells by default. Returned paths exclude the start cell and include the target.
 2. Effective non-walkable, water, `ROCK_WALL`, and mineable cells are blocked. Construction footprints and generated resources are blocked except for an explicitly allowed job target. Stockpile zones and ground items are non-blocking.
 3. `ChunkManager` remains the source for loaded/effective terrain and generated-resource occupancy. `WorldState` remains the source for construction occupancy and all job/reservation mutation. The query helper owns no authoritative state.
-4. Each `Colonist` owns only its transient current path and index. Wandering, construction, harvest, haul pickup/deposit, warmth, and shelter movement advance cell by cell through the existing world-position conversion.
-5. A step that becomes invalid fails the activity safely. Job movement releases its existing authoritative reservations; haul cleanup restores a carried item according to the existing drop rules.
-6. Paths are cleared on idle, completion, failure, and import. They are not serialized.
+4. Each `Colonist` owns only its transient player command, manual destination, current path, and index. Manual Move, wandering, construction, harvest, haul pickup/deposit, warmth, and shelter movement advance cell by cell through the existing world-position conversion.
+5. `Main` converts a selected-colonist Normal-mode right click into a destination cell. The colonist validates reachability before mutation, then replaces any previous Move and abandons active work through existing reservation/item cleanup.
+6. While Move is active, autonomous idle/job selection does not run. Deselecting or selecting another colonist does not alter the command.
+7. A step that becomes invalid fails the activity safely. Manual Move clears and resumes idle AI; job movement releases its authoritative reservations, and haul cleanup restores a carried item according to existing drop rules.
+8. Paths and player commands are cleared on idle, completion, failure, and import. They are not serialized.
 
 ## Berry Bush Flow
 
@@ -189,11 +191,14 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 
 ## Colonist Construction Work Flow
 
-1. During normal job collection, an idle colonist asks `WorldState.get_available_construction_sites(16)` only when its Construct priority is enabled, checks stable-id-ordered origins for reachability, and stops after the first reachable transient candidate.
-2. `reserve_construction_site()` allocates the full site cost across stable-id-ordered Storehouse components, recording site id, storage id, resource type, and amount, then assigns the site to one colonist. If no completed storage component exists, it may instead create one legacy `ResourceStockpile` earmark to bootstrap the first Storehouse. Competing or overcommitted reservations fail without mutation.
-3. Before reservation, the colonist requires a path to the site's origin with the construction target exception. After reservation it revalidates the route, enters `moving_to_construction`, and follows the transient cell path; failed revalidation immediately releases the worker and material reservations.
-4. At the origin it enters `constructing` and submits `get_effective_construction_work_rate() * delta` through `request_progress_construction(site_id, amount, colonist_id)`. Hard Worker and Lazy supply the only current construction multipliers.
-5. Worker progress is rejected unless the reservation belongs to that colonist. The first valid tick consumes and clears all component allocations atomically; later ticks accumulate progress without another spend.
+1. `WorldState` evaluates construction sources in order: available Storehouse contents, loose matching ground-item stacks within a 12-cell site radius, then legacy totals only when no Storehouse exists.
+2. Ground-item lookup uses a simulation-owned cell index and loaded cells inside the bounded rectangle; it does not scan all map items. Delivery candidates exclude disabled, ordinary-Haul-reserved, construction-delivery-reserved, mismatched, oversized, and out-of-radius items.
+3. A Construct worker requires a path to the item and then to the construction origin before reserving one site-item pair. Pickup removes the authoritative ground item; delivery adds the complete stack to the site's authoritative `delivered_resources`.
+4. Storehouse contents that can cover the complete outstanding cost suppress delivery candidates. If Storehouse contents are insufficient, loose delivery covers only the deficit. With no Storehouse, reachable loose delivery precedes legacy bootstrap spending.
+5. Once delivered plus stored/bootstrap sources cover the cost, `reserve_construction_site()` allocates only the undelivered remainder and assigns the site worker. Competing reservations fail without mutation.
+6. Before construction, the colonist requires a path to the site's origin with the construction target exception. At the origin it submits `get_effective_construction_work_rate() * delta` through `request_progress_construction(site_id, amount, colonist_id)`.
+7. The first valid progress tick consumes the reserved undelivered remainder and marks the complete required cost consumed. Delivered materials and stored allocations cannot be consumed twice; later ticks only add build progress.
+8. Delivery abandonment releases an unpicked item or restores a picked item. Path invalidation and manual Move reuse the same cleanup. Cancellation restores delivered resources if construction has not consumed them.
 6. Releasing work before first progress releases the allocations and restores availability. Completion clears the worker reservation and returns the colonist to idle.
 7. Construction enters this focused activity through the shared Colonist candidate selector while retaining its separate WorldState authority.
 
@@ -242,7 +247,7 @@ There are no separate `biome_config.gd`, `biome_resolver.gd`, or `region_registr
 3. `WorldState._refresh_storage_capacity()` starts from `ResourceStockpile.BASE_STORAGE_CAPACITY` (100) and adds definition metadata only for completed authoritative Storehouse records.
 4. Completion and construction-state import refresh the stockpile limit. Chunk unload only removes projections and cannot change capacity.
 5. `ResourceStockpile` computes available compatibility storage from capacity minus compatibility totals and legacy capacity reservations; harvest itself creates none because output first remains on the ground.
-6. Storehouse Haul reserves the full item amount on one storage component at assignment, consumes that reservation at deposit, and then adds the full amount to component contents. Legacy zone Haul keeps the previous `ResourceStockpile` reservation/deposit path.
+6. Storehouse Haul reserves the full item amount on one storage component at assignment, consumes that reservation at deposit, and then adds the full amount to component contents. Legacy zone Haul keeps the previous `ResourceStockpile` reservation/deposit path only in worlds with no completed storage component.
 7. Existing/imported totals remain lossless even if over capacity.
 8. The resource panel reads aggregate stored and capacity values from `WorldState`; signals only trigger presentation refresh.
 9. Version `2` stores completed construction records, stockpile totals, and additive Storehouse `storage_contents`, not derived capacity. Load imports totals without deletion and re-derives capacity and components from Storehouses.

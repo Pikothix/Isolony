@@ -14,7 +14,7 @@ const LAST_NAMES: Array[String] = [
 	"Gray", "Hart", "Ives", "Kern", "Lowe", "Marsh",
 ]
 
-@export_range(1, 12, 1) var colonist_count: int = 4
+@export_range(1, 12, 1) var colonist_count: int = 3
 @export var chunk_manager_path: NodePath = NodePath("../..")
 @export var colonist_scene: PackedScene
 
@@ -45,6 +45,7 @@ func _process(delta: float) -> void:
 	_cleanup_timer = reservation_cleanup_interval
 	var active_ids: Array[String] = get_active_colonist_ids()
 	_world_state.cleanup_stale_construction_reservations(active_ids)
+	_world_state.cleanup_stale_construction_material_deliveries(active_ids)
 	_world_state.cleanup_stale_harvest_reservations(active_ids)
 	_world_state.cleanup_stale_haul_reservations(active_ids)
 

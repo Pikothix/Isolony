@@ -1,9 +1,9 @@
 extends Node2D
 class_name Colonist
 
-## Purpose: Persistent colonist records plus transient loaded-cell path movement, prioritized work, needs, and need-seeking behavior.
-## Responsibility: Own authoritative identity, character data, needs, and work priorities while executing simulation-issued work orders over non-authoritative paths.
-## Assumption: Import resumes from idle at the saved position; jobs, paths, carrying, reservations, movement targets, selection, and debug state are not saved.
+## Purpose: Persistent colonist records plus transient loaded-cell path movement, player Move commands, construction delivery, prioritized work, needs, and need-seeking behavior.
+## Responsibility: Own authoritative identity, character data, needs, and work priorities while executing transient player commands and simulation-issued work over non-authoritative paths.
+## Assumption: Import resumes from idle at the saved position; player commands, jobs, paths, carrying, reservations, movement targets, selection, and debug state are not saved.
 
 const TraitRegistryRef = preload("res://scripts/entities/colonist_trait_registry.gd")
 const ReachabilityQueryRef = preload("res://scripts/world/reachability_query.gd")
@@ -42,6 +42,7 @@ const WORK_DISABLED := 0
 const WORK_PRIORITY_MIN := 1
 const WORK_PRIORITY_MAX := 4
 const JOB_TYPE_CONSTRUCT := "construct"
+const JOB_TYPE_DELIVER_CONSTRUCTION := "deliver_construction_material"
 const JOB_TYPE_HARVEST := "harvest"
 const JOB_TYPE_HAUL := "haul"
 const JOB_CANDIDATE_LIMIT := 16
@@ -63,6 +64,11 @@ const DEFAULT_WORK_PRIORITIES := {
 enum Activity {
 	IDLE,
 	WANDERING,
+	MOVING_TO_PLAYER_COMMAND,
+	MOVING_TO_CONSTRUCTION_MATERIAL,
+	CARRYING_CONSTRUCTION_MATERIAL,
+	MOVING_CONSTRUCTION_MATERIAL_TO_SITE,
+	DELIVERING_CONSTRUCTION_MATERIAL,
 	MOVING_TO_CONSTRUCTION,
 	CONSTRUCTING,
 	SEEKING_WARMTH,
@@ -74,6 +80,11 @@ enum Activity {
 	CARRYING_ITEM,
 	MOVING_TO_STOCKPILE,
 	DEPOSITING,
+}
+
+enum PlayerCommand {
+	NONE,
+	MOVE,
 }
 
 @export var move_speed: float = 42.0
@@ -119,8 +130,12 @@ var _relationships: Array[Dictionary] = []
 var _work_priorities: Dictionary = {}
 
 var _activity: Activity = Activity.IDLE
+var _player_command: PlayerCommand = PlayerCommand.NONE
+var _manual_destination: Vector2i = Vector2i.ZERO
 var _construction_site_id: String = ""
 var _construction_travel_elapsed: float = 0.0
+var _construction_delivery_item_id: String = ""
+var _construction_delivery_site_id: String = ""
 var _eating_timer: float = 0.0
 var _harvest_order_id: String = ""
 var _harvest_travel_elapsed: float = 0.0
@@ -150,6 +165,8 @@ func _exit_tree() -> void:
 	if world_state != null and is_instance_valid(world_state) and not colonist_id.is_empty():
 		if not _haul_item_id.is_empty():
 			_finish_haul_job("colonist_exit_tree")
+		if not _construction_delivery_item_id.is_empty():
+			_finish_construction_delivery_job("colonist_exit_tree")
 		world_state.release_all_reservations_for_colonist(colonist_id, "colonist_exit_tree")
 		world_state.release_all_harvest_orders_for_colonist(colonist_id, "colonist_exit_tree")
 		world_state.release_all_haul_reservations_for_colonist(colonist_id, "colonist_exit_tree")
@@ -187,7 +204,7 @@ func _process(delta: float) -> void:
 	match _activity:
 		Activity.IDLE:
 			_process_idle(delta)
-		Activity.WANDERING, Activity.MOVING_TO_CONSTRUCTION, Activity.MOVING_TO_HARVEST, Activity.MOVING_TO_HAUL_ITEM, Activity.MOVING_TO_STOCKPILE:
+		Activity.WANDERING, Activity.MOVING_TO_PLAYER_COMMAND, Activity.MOVING_TO_CONSTRUCTION_MATERIAL, Activity.MOVING_CONSTRUCTION_MATERIAL_TO_SITE, Activity.MOVING_TO_CONSTRUCTION, Activity.MOVING_TO_HARVEST, Activity.MOVING_TO_HAUL_ITEM, Activity.MOVING_TO_STOCKPILE:
 			_move_towards_target(delta)
 		Activity.CONSTRUCTING:
 			_process_construction(delta)
@@ -197,6 +214,8 @@ func _process(delta: float) -> void:
 			_process_eating(delta)
 		Activity.HARVESTING:
 			_process_harvesting(delta)
+		Activity.CARRYING_CONSTRUCTION_MATERIAL, Activity.DELIVERING_CONSTRUCTION_MATERIAL:
+			_process_construction_material_delivery()
 		Activity.CARRYING_ITEM, Activity.DEPOSITING:
 			_process_hauling()
 
@@ -312,6 +331,12 @@ func get_effective_night_rest_decay_rate() -> float:
 func get_construction_site_id() -> String:
 	return _construction_site_id
 
+func get_construction_delivery_item_id() -> String:
+	return _construction_delivery_item_id
+
+func get_construction_delivery_site_id() -> String:
+	return _construction_delivery_site_id
+
 func get_harvest_order_id() -> String:
 	return _harvest_order_id
 
@@ -320,6 +345,29 @@ func get_haul_item_id() -> String:
 
 func get_carried_item() -> Dictionary:
 	return _carried_item.duplicate(true)
+
+func request_manual_move(destination_cell: Vector2i) -> Dictionary:
+	## Validate before abandoning current behavior so rejected commands do not mutate jobs, paths, or reservations.
+	var path_result: Dictionary = _query_path(destination_cell)
+	if not bool(path_result.get("reachable", false)):
+		return _build_manual_move_result(false, String(path_result.get("reason", "unreachable")), destination_cell)
+	_abandon_current_activity_for_manual_move()
+	_player_command = PlayerCommand.MOVE
+	_manual_destination = destination_cell
+	_apply_path(path_result, destination_cell)
+	_activity = Activity.MOVING_TO_PLAYER_COMMAND
+	if not has_active_path():
+		_complete_path_arrival()
+	return _build_manual_move_result(true, "accepted", destination_cell)
+
+func get_player_command_name() -> String:
+	return PlayerCommand.keys()[_player_command].to_lower()
+
+func has_active_player_command() -> bool:
+	return _player_command != PlayerCommand.NONE
+
+func get_manual_move_destination() -> Vector2i:
+	return _manual_destination
 
 func get_current_path() -> Array[Vector2i]:
 	## Validation/debug read only; path cells are transient and never exported.
@@ -447,9 +495,11 @@ func _get_trait_modifier_product(modifier_name: String) -> float:
 	return product
 
 func _reset_transient_state() -> void:
-	## Imported colonists deliberately forget jobs and paths so runtime authorities can assign fresh work.
+	## Imported colonists deliberately forget player commands, jobs, and paths so runtime authorities can assign fresh work.
 	_construction_site_id = ""
 	_construction_travel_elapsed = 0.0
+	_construction_delivery_item_id = ""
+	_construction_delivery_site_id = ""
 	_eating_timer = 0.0
 	_harvest_order_id = ""
 	_harvest_travel_elapsed = 0.0
@@ -533,14 +583,39 @@ func _try_start_prioritized_work() -> bool:
 
 func collect_available_jobs() -> Array[Dictionary]:
 	## Project reachable focused WorldState work sources into transient, non-authoritative candidates.
-	## Source order is the stable tie-break: construction, then harvest, then haul.
+	## Source order is the stable tie-break: construction delivery, construction, harvest, then haul.
 	## One reachable candidate per work type is sufficient because reservation follows immediately on the main thread.
 	var jobs: Array[Dictionary] = []
 	if world_state == null or colonist_id.is_empty():
 		return jobs
 	if can_do_work("Construct"):
+		var reachable_delivery_site_ids: Dictionary = {}
+		for delivery: Dictionary in world_state.get_available_construction_material_deliveries(JOB_CANDIDATE_LIMIT):
+			_increment_job_scheduling_counter("candidates_considered")
+			var item_cell: Vector2i = delivery.get("item_cell", current_cell)
+			var site_cell: Vector2i = delivery.get("site_cell", current_cell)
+			var pickup_path: Dictionary = _query_job_path(current_cell, item_cell)
+			if not bool(pickup_path.get("reachable", false)):
+				continue
+			var delivery_path: Dictionary = _query_job_path(item_cell, site_cell, {"allow_target_construction": true})
+			if not bool(delivery_path.get("reachable", false)):
+				continue
+			jobs.append({
+				"job_type": JOB_TYPE_DELIVER_CONSTRUCTION,
+				"priority": get_work_priority("Construct"),
+				"target_id": String(delivery.get("item_id", "")),
+				"target_cell": item_cell,
+				"site_id": String(delivery.get("site_id", "")),
+				"destination_cell": site_cell,
+				"reservation_result": {},
+			})
+			reachable_delivery_site_ids[String(delivery.get("site_id", ""))] = true
+			break
 		for site: Dictionary in world_state.get_available_construction_sites(JOB_CANDIDATE_LIMIT):
 			_increment_job_scheduling_counter("candidates_considered")
+			var site_id: String = String(site.get("site_id", ""))
+			if reachable_delivery_site_ids.has(site_id):
+				continue
 			var site_cell: Vector2i = site.get("origin_cell", current_cell)
 			var site_path: Dictionary = _query_job_path(current_cell, site_cell, {"allow_target_construction": true})
 			if not bool(site_path.get("reachable", false)):
@@ -548,7 +623,7 @@ func collect_available_jobs() -> Array[Dictionary]:
 			jobs.append({
 				"job_type": JOB_TYPE_CONSTRUCT,
 				"priority": get_work_priority("Construct"),
-				"target_id": String(site.get("site_id", "")),
+				"target_id": site_id,
 				"target_cell": site_cell,
 				"reservation_result": {},
 			})
@@ -631,6 +706,27 @@ func start_job(job: Dictionary) -> bool:
 			_apply_path(construction_path, construction_target)
 			_activity = Activity.MOVING_TO_CONSTRUCTION
 			return true
+		JOB_TYPE_DELIVER_CONSTRUCTION:
+			var site_id: String = String(job.get("site_id", ""))
+			var delivery_reservation: Dictionary = world_state.get_construction_material_delivery_reservation(target_id)
+			if site_id.is_empty() or String(delivery_reservation.get("site_id", "")) != site_id or String(delivery_reservation.get("reserved_by_colonist_id", "")) != colonist_id:
+				_release_job_candidate_reservation(job, "construction_delivery_start_validation_failed")
+				return false
+			var delivery_item: Dictionary = delivery_reservation.get("item", {})
+			var pickup_cell: Vector2i = delivery_item.get("cell", job.get("target_cell", current_cell))
+			var site_cell: Vector2i = delivery_reservation.get("destination_cell", job.get("destination_cell", current_cell))
+			var pickup_path: Dictionary = _query_job_path(current_cell, pickup_cell)
+			var site_path: Dictionary = _query_job_path(pickup_cell, site_cell, {"allow_target_construction": true})
+			if not bool(pickup_path.get("reachable", false)) or not bool(site_path.get("reachable", false)):
+				_release_job_candidate_reservation(job, "construction_delivery_path_unreachable")
+				return false
+			_construction_delivery_item_id = target_id
+			_construction_delivery_site_id = site_id
+			_construction_travel_elapsed = 0.0
+			_carried_item.clear()
+			_apply_path(pickup_path, pickup_cell)
+			_activity = Activity.MOVING_TO_CONSTRUCTION_MATERIAL
+			return true
 		JOB_TYPE_HARVEST:
 			if not can_do_work("Harvest") or world_state.get_harvest_order_reservation(target_id) != colonist_id:
 				_release_job_candidate_reservation(job, "harvest_start_validation_failed")
@@ -679,6 +775,11 @@ func _reserve_job_candidate(candidate: Dictionary) -> Dictionary:
 			if can_do_work("Construct") and not target_id.is_empty():
 				_increment_job_scheduling_counter("reservations_attempted")
 				result = world_state.reserve_construction_site(colonist_id, target_id)
+		JOB_TYPE_DELIVER_CONSTRUCTION:
+			var site_id: String = String(candidate.get("site_id", ""))
+			if can_do_work("Construct") and not target_id.is_empty() and not site_id.is_empty():
+				_increment_job_scheduling_counter("reservations_attempted")
+				result = world_state.reserve_construction_material_delivery(site_id, target_id, colonist_id)
 		JOB_TYPE_HARVEST:
 			if can_do_work("Harvest") and not target_id.is_empty():
 				_increment_job_scheduling_counter("reservations_attempted")
@@ -700,6 +801,8 @@ func _release_job_candidate_reservation(job: Dictionary, reason: String) -> void
 	match String(job.get("job_type", "")):
 		JOB_TYPE_CONSTRUCT:
 			world_state.release_construction_reservation(target_id, colonist_id, reason)
+		JOB_TYPE_DELIVER_CONSTRUCTION:
+			world_state.release_construction_material_delivery(target_id, colonist_id, reason)
 		JOB_TYPE_HARVEST:
 			world_state.release_harvest_order(target_id, colonist_id, reason)
 		JOB_TYPE_HAUL:
@@ -849,7 +952,16 @@ func _process_need_seeking(delta: float) -> void:
 	_move_towards_target(delta)
 
 func _move_towards_target(delta: float) -> void:
-	if _activity == Activity.MOVING_TO_CONSTRUCTION and world_state != null:
+	if (_activity == Activity.MOVING_TO_CONSTRUCTION_MATERIAL or _activity == Activity.MOVING_CONSTRUCTION_MATERIAL_TO_SITE) and world_state != null:
+		_construction_travel_elapsed += delta
+		if _construction_travel_elapsed >= construction_travel_timeout:
+			_finish_construction_delivery_job("construction_delivery_travel_timeout")
+			return
+		var delivery_reservation: Dictionary = world_state.get_construction_material_delivery_reservation(_construction_delivery_item_id)
+		if String(delivery_reservation.get("reserved_by_colonist_id", "")) != colonist_id:
+			_finish_construction_delivery_job("construction_delivery_reservation_lost")
+			return
+	elif _activity == Activity.MOVING_TO_CONSTRUCTION and world_state != null:
 		_construction_travel_elapsed += delta
 		if _construction_travel_elapsed >= construction_travel_timeout:
 			_finish_construction_job("construction_travel_timeout")
@@ -897,12 +1009,16 @@ func _move_towards_target(delta: float) -> void:
 
 func _get_current_path_options() -> Dictionary:
 	return {
-		"allow_target_construction": _activity == Activity.MOVING_TO_CONSTRUCTION,
+		"allow_target_construction": _activity == Activity.MOVING_TO_CONSTRUCTION or _activity == Activity.MOVING_CONSTRUCTION_MATERIAL_TO_SITE,
 		"allow_target_resource": _activity == Activity.MOVING_TO_HARVEST,
 	}
 
 func _fail_current_movement(reason: String) -> void:
 	match _activity:
+		Activity.MOVING_TO_PLAYER_COMMAND:
+			_resume_ai_after_manual_move()
+		Activity.MOVING_TO_CONSTRUCTION_MATERIAL, Activity.MOVING_CONSTRUCTION_MATERIAL_TO_SITE:
+			_finish_construction_delivery_job(reason)
 		Activity.MOVING_TO_CONSTRUCTION:
 			_finish_construction_job(reason)
 		Activity.MOVING_TO_HARVEST:
@@ -915,7 +1031,18 @@ func _fail_current_movement(reason: String) -> void:
 func _complete_path_arrival() -> void:
 	_clear_path()
 	current_cell = target_cell
-	if _activity == Activity.MOVING_TO_CONSTRUCTION:
+	if _activity == Activity.MOVING_TO_PLAYER_COMMAND:
+		_resume_ai_after_manual_move()
+	elif _activity == Activity.MOVING_TO_CONSTRUCTION_MATERIAL:
+		var pickup: Dictionary = world_state.request_pickup_construction_material(_construction_delivery_item_id, colonist_id)
+		if not bool(pickup.get("ok", false)):
+			_finish_construction_delivery_job("pickup_%s" % String(pickup.get("reason", "failed")))
+		else:
+			_carried_item = pickup.get("item", {}).duplicate(true)
+			_activity = Activity.CARRYING_CONSTRUCTION_MATERIAL
+	elif _activity == Activity.MOVING_CONSTRUCTION_MATERIAL_TO_SITE:
+		_activity = Activity.DELIVERING_CONSTRUCTION_MATERIAL
+	elif _activity == Activity.MOVING_TO_CONSTRUCTION:
 		var site: Dictionary = world_state.get_construction_site(_construction_site_id) if world_state != null else {}
 		if site.is_empty() or bool(site.get("completed", false)):
 			_finish_construction_job("site_invalid")
@@ -951,6 +1078,28 @@ func _process_construction(delta: float) -> void:
 	var result: Dictionary = world_state.request_progress_construction(_construction_site_id, get_effective_construction_work_rate() * delta, colonist_id)
 	if not bool(result.get("ok", false)) or bool(result.get("completed", false)):
 		_finish_construction_job("construction_completed" if bool(result.get("completed", false)) else "progress_%s" % String(result.get("reason", "failed")))
+
+func _process_construction_material_delivery() -> void:
+	if world_state == null or _construction_delivery_item_id.is_empty() or _construction_delivery_site_id.is_empty():
+		_finish_construction_delivery_job("missing_construction_delivery_context")
+		return
+	if _activity == Activity.CARRYING_CONSTRUCTION_MATERIAL:
+		if _carried_item.is_empty():
+			_finish_construction_delivery_job("missing_construction_material")
+			return
+		var reservation: Dictionary = world_state.get_construction_material_delivery_reservation(_construction_delivery_item_id)
+		var destination: Vector2i = reservation.get("destination_cell", current_cell)
+		var path_result: Dictionary = _query_path(destination, true)
+		if not bool(path_result.get("reachable", false)):
+			_finish_construction_delivery_job("construction_site_path_unreachable")
+			return
+		_apply_path(path_result, destination)
+		_construction_travel_elapsed = 0.0
+		_activity = Activity.MOVING_CONSTRUCTION_MATERIAL_TO_SITE
+		return
+	if _activity == Activity.DELIVERING_CONSTRUCTION_MATERIAL:
+		var result: Dictionary = world_state.request_deliver_construction_material(_construction_delivery_item_id, colonist_id, _carried_item, current_cell)
+		_finish_construction_delivery_job("construction_material_delivered" if bool(result.get("ok", false)) else "delivery_%s" % String(result.get("reason", "failed")), bool(result.get("ok", false)))
 
 func _process_harvesting(delta: float) -> void:
 	if world_state == null or _harvest_order_id.is_empty():
@@ -1004,6 +1153,16 @@ func _finish_construction_job(reason: String = "construction_abandoned") -> void
 	_job_evaluation_cooldown_remaining = 0.0
 	_enter_idle()
 
+func _finish_construction_delivery_job(reason: String = "construction_delivery_abandoned", delivered: bool = false) -> void:
+	if world_state != null and not _construction_delivery_item_id.is_empty() and not delivered:
+		world_state.release_construction_material_delivery(_construction_delivery_item_id, colonist_id, reason, current_cell if not _carried_item.is_empty() else null)
+	_construction_delivery_item_id = ""
+	_construction_delivery_site_id = ""
+	_construction_travel_elapsed = 0.0
+	_carried_item.clear()
+	_job_evaluation_cooldown_remaining = 0.0
+	_enter_idle()
+
 func _finish_harvest_job(reason: String = "harvest_abandoned") -> void:
 	if world_state != null and not _harvest_order_id.is_empty():
 		world_state.release_harvest_order(_harvest_order_id, colonist_id, reason)
@@ -1028,7 +1187,39 @@ func _finish_haul_job(reason: String = "haul_abandoned", deposited: bool = false
 	_job_evaluation_cooldown_remaining = 0.0
 	_enter_idle()
 
+func _abandon_current_activity_for_manual_move() -> void:
+	## Reuse job cleanup so authoritative reservations and carried items cannot survive a player override.
+	match _activity:
+		Activity.MOVING_TO_CONSTRUCTION_MATERIAL, Activity.CARRYING_CONSTRUCTION_MATERIAL, Activity.MOVING_CONSTRUCTION_MATERIAL_TO_SITE, Activity.DELIVERING_CONSTRUCTION_MATERIAL:
+			_finish_construction_delivery_job("manual_move_requested")
+		Activity.MOVING_TO_CONSTRUCTION, Activity.CONSTRUCTING:
+			_finish_construction_job("manual_move_requested")
+		Activity.MOVING_TO_HARVEST, Activity.HARVESTING:
+			_finish_harvest_job("manual_move_requested")
+		Activity.MOVING_TO_HAUL_ITEM, Activity.CARRYING_ITEM, Activity.MOVING_TO_STOCKPILE, Activity.DEPOSITING:
+			_finish_haul_job("manual_move_requested")
+		_:
+			_enter_idle()
+
+func _resume_ai_after_manual_move() -> void:
+	_enter_idle()
+	_pause_timer = 0.0
+	_job_evaluation_cooldown_remaining = 0.0
+
+func _clear_player_command() -> void:
+	_player_command = PlayerCommand.NONE
+	_manual_destination = current_cell
+
+func _build_manual_move_result(ok: bool, reason: String, destination_cell: Vector2i) -> Dictionary:
+	return {
+		"ok": ok,
+		"reason": reason,
+		"destination_cell": destination_cell,
+		"command": "move" if ok else get_player_command_name(),
+	}
+
 func _enter_idle() -> void:
+	_clear_player_command()
 	_clear_path()
 	target_cell = current_cell
 	_target_position = global_position

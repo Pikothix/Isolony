@@ -48,7 +48,7 @@ y_sort_enabled = true
 [node name="ColonistManager" type="Node2D" parent="ChunkManager/GameplayYSort" unique_id=470371596]
 y_sort_enabled = true
 script = ExtResource("4_colonist_manager_script")
-colonist_count = 12
+colonist_count = 3
 colonist_scene = ExtResource("7_colonist_scene")
 
 [node name="Camera2D" type="Camera2D" parent="." unique_id=2070964511]

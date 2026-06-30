@@ -43,12 +43,12 @@ Scene-level values currently override some script defaults, including:
 - `ChunkManager.procedural_rock_small_size = 48`
 - `ChunkManager.procedural_rock_medium_size = 48`
 - `ChunkManager.procedural_rock_large_size = 48`
-- `ColonistManager.colonist_count = 12`
+- `ColonistManager.colonist_count = 3`
 
 ## Current System Ownership
 
-- `scripts/main.gd`: scene coordination, dependency injection, resource/time UI, active Normal/Build/Harvest mode ownership, dormant legacy stockpile-mode compatibility, colonist selection, and request routing.
-- `scripts/simulation/world_state.gd`: authoritative construction/storage-component/harvest-order/stockpile-zone/ground-item lifecycle, bounded deterministic availability snapshots, completed-building effects/storage-capacity derivation, and validated stockpile coordination.
+- `scripts/main.gd`: scene coordination, dependency injection, resource/time UI, active Normal/Build/Harvest mode ownership, dormant legacy stockpile-mode compatibility, colonist selection, manual Move input, and request routing.
+- `scripts/simulation/world_state.gd`: authoritative construction/storage-component/material-delivery/harvest-order/stockpile-zone/ground-item lifecycle, bounded deterministic availability snapshots, completed-building effects/storage-capacity derivation, and validated stockpile coordination.
 - `scripts/simulation/time_state.gd`: clock time, day/night phase, clock labels, clock scaling, clock pause state, and time/phase signals. Its pause/scale values do not pause or scale all colonist simulation.
 - `scripts/simulation/resource_stockpile.gd`: abstract stored totals/capacity, construction resource earmarks, haul storage-capacity reservations, atomic mutations, and notifications.
 - `scripts/world/world_generator.gd`: deterministic noise setup, climate sampling, elevation classification, terrain classification, tile info creation, walkability lookup, chunk data generation, and resource spawn planning calls.
@@ -65,7 +65,7 @@ Scene-level values currently override some script defaults, including:
 - `scripts/procgen/proc_sprite_cache.gd`: presentation-only static texture cache and cache statistics. This is hidden global process state, but it carries no simulation authority and is excluded from saves.
 - `scripts/entities/colonist_manager.gd`: colonist population export/replacement, stable-id relationship resolution, deterministic new-population generation, hit queries, `WorldState` injection, and stale-reservation audits.
 - `scripts/entities/colonist_trait_registry.gd`: trait definitions, descriptions, exclusions, and centralized modifier values.
-- `scripts/entities/colonist.gd`: authoritative persistent identity, position, needs, skills, traits, relationships, and per-work-type priorities plus transient construction/harvest/haul activity, current cell path, and cleanup.
+- `scripts/entities/colonist.gd`: authoritative persistent identity, position, needs, skills, traits, relationships, and per-work-type priorities plus transient player Move commands, construction/material-delivery/harvest/haul activity, current cell path, and cleanup.
 - `scripts/ui/colonist_info_panel.gd`: selected-colonist state projection plus request-only Construct/Harvest/Haul priority cycling; it owns no colonist state.
 - `scripts/ui/selected_tile_panel.gd`: selected terrain preview and label display using `TerrainConfig` metadata.
 - `scripts/ui/bottom_toolbar.gd`: request-only bottom toolbar, transient Architect submenu, `BuildingDefinition`-generated building buttons, Harvest action, current-mode projection, and Cancel button.
@@ -131,7 +131,7 @@ Ground items persist in `deltas.ground_items`, while visuals remain transient. H
 
 Haul is implemented through the existing Colonist job-candidate flow but remains disabled by default (`0`) to preserve older player work policies. The selected-colonist panel exposes a Haul priority button. Enabled idle colonists consider construction, harvest, then haul for equal priorities after urgent needs and eating.
 
-`WorldState` owns transient haul reservations keyed by item id. A successful reservation prefers the nearest valid loaded deposit cell adjacent to a completed Storehouse storage component, reserves the item's complete amount against that component's capacity, and assigns one colonist. If no completed Storehouse destination is available, stockpile-zone hauling remains as a temporary legacy fallback that reserves capacity against `ResourceStockpile`. Items already inside enabled zones, unloaded items/destinations, reserved items, and items that do not fit the selected destination capacity are unavailable.
+`WorldState` owns transient haul reservations keyed by item id. Once any completed Storehouse storage component exists, reservations use only valid loaded deposit cells adjacent to Storehouses and never fall back to legacy stockpile zones when Storehouses are full or temporarily unavailable. With no completed storage component, stockpile-zone hauling remains as a bootstrap/save-compatibility fallback backed by `ResourceStockpile`. Items inside enabled zones count as already stockpiled only during that no-Storehouse compatibility mode; after Storehouse activation they can be hauled into a component.
 
 The colonist enters `moving_to_haul_item`, picks up the complete item, briefly enters `carrying_item`, moves through `moving_to_stockpile`, then enters `depositing`. Storehouse deposit validates the same item, owner, adjacent destination cell, storage component, and component capacity reservation before adding the full amount to that component's contents. Legacy stockpile-zone deposit keeps the previous `ResourceStockpile` mutation path. No partial carrying exists.
 
@@ -193,7 +193,7 @@ Hover an incomplete site and press `X` to request cancellation. `WorldState` rej
 
 `WorldState` owns construction-site records and occupied-cell state. It validates definitions, loaded cells, effective terrain walkability, blocked terrain, generated resource occupancy, and other construction occupancy before mutation. `ChunkManager` reads that state only to spawn and remove placeholder visuals as chunks stream.
 
-Construction records are included in version `2` save data at `deltas.construction_sites`, including consumed resources, progress, and completion. Records survive chunk unload because they are not stored in loaded chunk dictionaries; incomplete or completed visuals are recreated from `WorldState` when the origin chunk reloads or construction state is imported.
+Construction records are included in version `2` save data at `deltas.construction_sites`, including delivered and consumed resources, progress, and completion. Delivery reservations and carrying remain transient. Records survive chunk unload because they are not stored in loaded chunk dictionaries; incomplete or completed visuals are recreated from `WorldState` when the origin chunk reloads or construction state is imported.
 
 Cancelled records are removed before export and therefore cannot reappear through save/load. Completed Campfires remain saved and cannot currently be cancelled or demolished.
 
@@ -253,13 +253,15 @@ Incomplete Storehouses draw a footprint scaffold. Completed Storehouses draw a s
 
 In Normal selection mode, clicking any occupied cell of a completed Storehouse opens a read-only storage inspector showing its display name, used/capacity total, and non-empty resource contents. Clicking terrain or selecting a colonist clears the Storehouse inspector. The selected storage id and formatted panel contents are transient UI state and are not saved.
 
-`ResourceStockpile` owns compatibility stored totals, the current shared limit, no-storage construction/eating bootstrap mutations, and legacy haul-deposit capacity reservations. Harvest itself reserves no capacity because output remains physical. Storehouse Haul reserves the full item amount on the selected storage component; legacy zone Haul reserves in `ResourceStockpile`. The resource panel displays aggregate stored/capacity values; reserved haul capacity and ground items are excluded from the stored count.
+`ResourceStockpile` owns compatibility stored totals, the current shared limit, no-storage construction/eating bootstrap mutations, and no-Storehouse legacy haul-deposit capacity reservations. Harvest itself reserves no capacity because output remains physical. Once a Storehouse component exists, Haul reserves only component capacity and cannot select a legacy zone fallback. The resource panel continues to display aggregate compatibility plus Storehouse totals; reserved haul capacity and ground items are excluded from the stored count.
 
 Version `2` saves no derived capacity field. Completed Storehouse construction records persist normally, and storage component records are re-derived after load. Storehouse contents are stored additively on the completed construction record as `storage_contents`; transient haul reservations are not saved. Stockpile import accepts saved over-capacity totals without deleting them; later additions remain rejected until spending or more Storehouses creates room.
 
 ## Colonist Construction Work
 
-Idle colonists with enabled Construct work query `WorldState` for funded, incomplete, loaded construction sites. `WorldState` owns one worker reservation per site, while `ResourceStockpile` atomically earmarks that site's full cost. A second site is not affordable while the same resources are earmarked. Before reservation, the colonist requires a loaded-cell path to the origin, allowing the occupied target cell only for that construction job. It then follows the transient cell path and submits `construction_work_rate * delta` progress until completion.
+Construction material source order is Storehouse contents, nearby reachable loose ground items, then legacy `ResourceStockpile` only while no Storehouse exists. `WorldState` queries loose items through a cell index within 12 cells of the site; it never scans the complete ground-item dictionary for delivery work. Full Storehouse funding suppresses loose delivery. Otherwise enabled Construct workers can reserve one matching, enabled, unreserved full stack, path to it and then to the site, pick it up, and add its amount to authoritative `delivered_resources`.
+
+Once delivered plus preferred stored/legacy resources cover the outstanding cost, an idle Construct worker can reserve the site. First progress consumes only the undelivered reserved remainder and marks the full cost consumed once; later progress does not spend again. Delivery abandonment releases an unpicked item or restores a carried item through the existing ground-item flow. Cancelling before resource consumption restores delivered materials. Delivery reservations, carrying, destinations, and paths are transient and excluded from saves.
 
 The first successful work tick consumes the site's reserved resources and clears the resource earmark; subsequent ticks only add progress. Releasing work before consumption releases both worker and resource reservations, restoring availability. Completion clears the worker reservation. Ordinary spending also uses available rather than earmarked totals. The debug `C` action remains available but is not required.
 
@@ -295,7 +297,9 @@ Colonist Rest/Warmth/Shelter/Hunger values are included in version `2` records. 
 
 Outside building-placement mode, clicking within a colonist's visual area selects the nearest colonist, displays a simple bottom-left panel, and shows a small selection diamond. The panel reads identity, activity, Rest/Warmth/Shelter/Hunger, relationships, traits, and skills. Clicking terrain clears selection. The panel and marker are presentation only.
 
-Colonist ids, names, nicknames, current cells, exact world positions, and needs persist in version `2`. Selection remains UI-only and is cleared when `ColonistManager` replaces the population during load.
+With a colonist selected in Normal mode, right-clicking a reachable loaded walkable cell issues a transient Move command. `Main` translates the mouse position only; the colonist validates and owns the destination/path, abandons any existing job through its normal cleanup, and suppresses autonomous job selection until arrival or path failure. A newer valid Move replaces the previous command. Deselecting or selecting another colonist does not cancel movement. Arrival and invalidation clear the command and immediately return the colonist to normal idle AI; rejected destinations do not alter current behavior.
+
+Colonist ids, names, nicknames, current cells, exact world positions, and needs persist in version `2`. Selection and manual Move command state remain transient; imports clear both and resume idle.
 
 ## Colonist Skills Foundation
 
@@ -351,7 +355,7 @@ Harvest output remains physical and does not require free abstract storage capac
 
 ## Known Architectural Risks
 
-- `Main` creates and wires `WorldState`; `WorldState` owns worker and per-Storehouse construction material reservations. While no completed storage component exists, worker construction and eating may bootstrap from legacy `ResourceStockpile` totals; direct debug progress also retains compatibility access.
+- `Main` creates and wires `WorldState`; `WorldState` owns worker and per-Storehouse construction material reservations. While no completed storage component exists, worker construction, direct debug progress, and eating may bootstrap from legacy `ResourceStockpile` totals. Once storage exists, both worker and direct progress consume Storehouse contents.
 - Terrain classification still lives in `WorldGenerator`, while terrain metadata queries live in `TerrainConfig`.
 - Elevation classification is an early deterministic prototype and does not yet support slopes, cliff faces, mining deltas, or pathfinding-aware elevation transitions.
 - Manual tile overrides can be exported/imported by `ChunkManager`, but still live outside `WorldState`.

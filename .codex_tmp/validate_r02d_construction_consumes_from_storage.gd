@@ -141,12 +141,20 @@ func _complete_storehouse(origin_hint: Vector2i, excluded: Array[Vector2i] = [])
 	var origin: Vector2i = _find_valid_building_origin("storehouse", origin_hint, excluded)
 	if origin == INVALID_CELL:
 		return INVALID_CELL
-	if not bool(_world_state.add_resource("wood", 30).get("ok", false)) or not bool(_world_state.add_resource("stone", 10).get("ok", false)):
-		return INVALID_CELL
+	var components: Array[Dictionary] = _world_state.get_storage_components()
+	if components.is_empty():
+		if not bool(_world_state.add_resource("wood", 30).get("ok", false)) or not bool(_world_state.add_resource("stone", 10).get("ok", false)):
+			return INVALID_CELL
+	else:
+		var storage_id: String = String(components[0].get("storage_id", ""))
+		if not _deposit_to_storage(storage_id, "wood", 30, "r02d_second_storehouse_wood") or not _deposit_to_storage(storage_id, "stone", 10, "r02d_second_storehouse_stone"):
+			return INVALID_CELL
 	var placement: Dictionary = _world_state.request_place_construction("storehouse", origin)
 	var site_id := "storehouse:%d:%d" % [origin.x, origin.y]
-	var progress: Dictionary = _world_state.request_progress_construction(site_id, 50.0)
-	return origin if bool(placement.get("ok", false)) and bool(progress.get("completed", false)) else INVALID_CELL
+	var worker_id := "r02d_second_storehouse"
+	var reservation: Dictionary = _world_state.reserve_construction_site(worker_id, site_id)
+	var progress: Dictionary = _world_state.request_progress_construction(site_id, 50.0, worker_id)
+	return origin if bool(placement.get("ok", false)) and bool(reservation.get("ok", false)) and bool(progress.get("completed", false)) else INVALID_CELL
 
 
 func _complete_first_storehouse_by_worker(origin_hint: Vector2i) -> Vector2i:

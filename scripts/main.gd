@@ -1,7 +1,7 @@
 extends Node2D
 
 ## Purpose: Coordinate the playable scene, transient control tools, and requests into simulation authorities.
-## Responsibility: Own active Build/Harvest control modes and previews while retaining dormant legacy stockpile-zone compatibility state.
+## Responsibility: Own player input, selection, transient Move requests, active Build/Harvest control modes, and previews while retaining dormant legacy stockpile-zone compatibility state.
 ## Assumption: Area designation considers only currently loaded resources and every mutation is validated by WorldState.
 
 const TerrainConfigRef = preload("res://scripts/world/terrain_config.gd")
@@ -190,6 +190,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif _stockpile_mode and event.button_index == MOUSE_BUTTON_LEFT:
 			# Main observes and commits the stockpile rectangle on release.
 			pass
+		elif event.button_index == MOUSE_BUTTON_RIGHT and _selected_colonist != null and is_instance_valid(_selected_colonist):
+			_request_selected_colonist_move(event.position)
+			get_viewport().set_input_as_handled()
 		elif event.button_index == MOUSE_BUTTON_LEFT:
 			_handle_world_selection()
 
@@ -468,6 +471,13 @@ func _handle_world_selection() -> void:
 	if _select_storage_at_cell(selected_cell):
 		return
 	_attempt_place_selected_tile()
+
+func _request_selected_colonist_move(screen_position: Vector2) -> Dictionary:
+	## Main translates presentation input; the selected Colonist owns validation and transient command state.
+	if _selected_colonist == null or not is_instance_valid(_selected_colonist):
+		return {"ok": false, "reason": "no_selected_colonist"}
+	var destination_cell: Vector2i = _chunk_manager.world_to_cell(_screen_to_world(screen_position))
+	return _selected_colonist.request_manual_move(destination_cell)
 
 func _set_selected_colonist(colonist: Colonist) -> void:
 	if _selected_colonist != null and is_instance_valid(_selected_colonist):

@@ -127,7 +127,7 @@ func _freeze_scene(main: Node, chunk_manager: ChunkManager, colonist_manager: Co
 
 func _build_representative_state(main: Node, generator: WorldGenerator, world_state: Node, chunk_manager: ChunkManager, colonist_manager: ColonistManager) -> Dictionary:
 	var colonists: Array[Colonist] = _get_colonists(colonist_manager)
-	if not _require(colonists.size() >= 4, "representative setup requires at least four colonists"):
+	if not _require(colonists.size() >= 3, "representative setup requires at least three colonists"):
 		return {}
 	var worker: Colonist = colonists[0]
 	var harvest_reservation_worker: Colonist = colonists[1]
