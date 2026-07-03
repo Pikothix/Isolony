@@ -37,6 +37,8 @@ static func find_path(chunk_manager: ChunkManager, world_state: Node, start_cell
 			var next_cell: Vector2i = current + offset
 			if came_from.has(next_cell):
 				continue
+			if not chunk_manager.can_move_between_cells(current, next_cell):
+				continue
 			if not is_cell_traversable(chunk_manager, world_state, next_cell, start_cell, target_cell, options):
 				continue
 			if came_from.size() >= max_visited_cells:

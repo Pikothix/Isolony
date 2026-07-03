@@ -991,7 +991,7 @@ func _move_towards_target(delta: float) -> void:
 		return
 	var next_cell: Vector2i = _current_path[_path_index]
 	var options: Dictionary = _get_current_path_options()
-	if not ReachabilityQueryRef.is_cell_traversable(chunk_manager, world_state, next_cell, current_cell, target_cell, options):
+	if not chunk_manager.can_move_between_cells(current_cell, next_cell) or not ReachabilityQueryRef.is_cell_traversable(chunk_manager, world_state, next_cell, current_cell, target_cell, options):
 		_fail_current_movement("path_became_blocked")
 		return
 	_target_position = chunk_manager.get_cell_world_position(next_cell) + Vector2(0, -6)

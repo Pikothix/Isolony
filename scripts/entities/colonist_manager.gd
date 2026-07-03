@@ -137,7 +137,9 @@ func _spawn_initial_colonists() -> void:
 	var spawned_colonists: Array[Colonist] = []
 	for index in range(colonist_count):
 		var spawn_origin: Vector2i = Vector2i(index * 2, index)
-		var spawn_cell: Vector2i = _chunk_manager.get_random_walkable_cell_near(spawn_origin, 8, 96)
+		# Initial placement is not a movement transition and runs before the first
+		# streamed chunks are necessarily available.
+		var spawn_cell: Vector2i = _chunk_manager.get_random_walkable_cell_near(spawn_origin, 8, 96, false)
 		var colonist: Colonist = colonist_scene.instantiate() as Colonist
 		var runtime_id := "colonist_%04d" % _next_colonist_id
 		var generated_first_name: String = FIRST_NAMES[index % FIRST_NAMES.size()]

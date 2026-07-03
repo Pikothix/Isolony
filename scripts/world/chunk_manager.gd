@@ -158,6 +158,34 @@ func get_effective_tile_info(cell: Vector2i) -> Dictionary:
 func get_cell_elevation(cell: Vector2i) -> int:
 	return int(get_effective_tile_info(cell).get("elevation", 0))
 
+func can_move_between_cells(from_cell: Vector2i, to_cell: Vector2i) -> bool:
+	## Authoritative local transition rule shared by path queries and live movement.
+	## Rendering geometry and collision shapes deliberately do not participate.
+	if abs(to_cell.x - from_cell.x) + abs(to_cell.y - from_cell.y) != 1:
+		return false
+	if not is_cell_loaded(from_cell) or not is_cell_loaded(to_cell):
+		return false
+	var from_info: Dictionary = get_effective_tile_info(from_cell)
+	var target_info: Dictionary = get_effective_tile_info(to_cell)
+	return bool(target_info.get("walkable", false)) and int(target_info.get("elevation", 0)) == int(from_info.get("elevation", 0))
+
+func get_move_block_reason(from_cell: Vector2i, to_cell: Vector2i) -> String:
+	## Debug-only explanation kept off the hot pathfinding loop.
+	if can_move_between_cells(from_cell, to_cell):
+		return ""
+	if abs(to_cell.x - from_cell.x) + abs(to_cell.y - from_cell.y) != 1:
+		return "cells_not_adjacent"
+	if not is_cell_loaded(from_cell):
+		return "from_cell_not_loaded"
+	if not is_cell_loaded(to_cell):
+		return "to_cell_not_loaded"
+	var target_info: Dictionary = get_effective_tile_info(to_cell)
+	if not bool(target_info.get("walkable", false)):
+		return "to_cell_not_walkable"
+	if int(target_info.get("elevation", 0)) != get_cell_elevation(from_cell):
+		return "elevation_transition_blocked"
+	return "movement_blocked"
+
 func is_cell_mineable(cell: Vector2i) -> bool:
 	return bool(get_effective_tile_info(cell).get("mineable", false))
 
@@ -215,18 +243,28 @@ func _build_manual_placement_result(ok: bool, reason: String, cell: Vector2i, te
 		"terrain_name": terrain_name,
 	}
 
-func get_random_walkable_cell_near(origin: Vector2i, radius: int, attempts: int = 32) -> Vector2i:
+func get_random_walkable_cell_near(origin: Vector2i, radius: int, attempts: int = 32, require_loaded_same_elevation: bool = true) -> Vector2i:
+	## Movement callers receive loaded candidates on the origin elevation. Initial
+	## population placement opts out because it runs before streaming is populated.
 	for _i in range(attempts):
 		var candidate: Vector2i = origin + Vector2i(_wander_rng.randi_range(-radius, radius), _wander_rng.randi_range(-radius, radius))
-		if _world_generator.is_cell_walkable(candidate):
+		if _is_random_walkable_candidate(origin, candidate, require_loaded_same_elevation):
 			return candidate
 	for step in range(1, radius * 2):
 		for offset_x in range(-step, step + 1):
 			for offset_y in range(-step, step + 1):
 				var candidate: Vector2i = origin + Vector2i(offset_x, offset_y)
-				if _world_generator.is_cell_walkable(candidate):
+				if _is_random_walkable_candidate(origin, candidate, require_loaded_same_elevation):
 					return candidate
 	return origin
+
+func _is_random_walkable_candidate(origin: Vector2i, candidate: Vector2i, require_loaded_same_elevation: bool) -> bool:
+	var tile_info: Dictionary = get_effective_tile_info(candidate)
+	if not bool(tile_info.get("walkable", false)):
+		return false
+	if not require_loaded_same_elevation:
+		return true
+	return is_cell_loaded(candidate) and int(tile_info.get("elevation", 0)) == get_cell_elevation(origin)
 
 func _prewarm_procedural_cache() -> void:
 	if not prewarm_procedural_variants:
