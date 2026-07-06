@@ -14,6 +14,13 @@ Current live baseline:
 - Active prewarm archetypes are `deciduous`, `conifer`, and `dead`.
 - Runtime biome tags come from terrain mapping in `tree_profiles.gd`; `default` remains a runtime fallback but is not part of the active prewarm sweep.
 
+Visual-only presentation profiles:
+
+- `mature` preserves the caller-selected size tier and remains the runtime default.
+- `juvenile` retains deciduous/conifer/dead identity and terrain palettes while selecting the medium tier.
+- `sapling` selects the small tier; deciduous trees use the dedicated sapling composition, while conifer/dead profiles retain their established generators at the smaller scale.
+- `scenes/debug/TreeProfileGallery.tscn` validates these profiles explicitly. Gallery profiles are not added to runtime prewarming.
+
 Still intentionally code-heavy:
 
 - Branch/canopy drawing math remains in `proc_trees.gd`.

@@ -105,6 +105,7 @@ func build_tile_info_for_terrain(cell: Vector2i, terrain_name: String, climate: 
 func generate_chunk(chunk_coord: Vector2i) -> Dictionary:
 	var origin: Vector2i = chunk_coord * CHUNK_SIZE
 	var tiles: Array[Dictionary] = []
+	var tile_lookup: Dictionary = {}
 	var walkable_cells: Array[Vector2i] = []
 	var resources: Array[Dictionary] = []
 	for y in range(CHUNK_SIZE):
@@ -112,12 +113,28 @@ func generate_chunk(chunk_coord: Vector2i) -> Dictionary:
 			var cell: Vector2i = origin + Vector2i(x, y)
 			var tile_info: Dictionary = get_tile_info(cell)
 			tiles.append(tile_info)
+			tile_lookup[cell] = tile_info
 			if tile_info.walkable:
 				walkable_cells.append(cell)
-			var resource_spawn: Dictionary = PropSpawnHelpers.build_resource_spawn(cell, tile_info, seed, TREE_DENSITY, ROCK_DENSITY, BERRY_BUSH_DENSITY)
-			if not resource_spawn.is_empty():
-				resources.append(resource_spawn)
+	for tile_info: Dictionary in tiles:
+		var cell: Vector2i = tile_info.cell
+		var neighbour_elevations := _get_orthogonal_neighbor_elevations(cell, tile_lookup)
+		var resource_spawn: Dictionary = PropSpawnHelpers.build_resource_spawn(cell, tile_info, neighbour_elevations, seed, TREE_DENSITY, ROCK_DENSITY, BERRY_BUSH_DENSITY)
+		if not resource_spawn.is_empty():
+			resources.append(resource_spawn)
 	return {"chunk_coord": chunk_coord, "tiles": tiles, "walkable_cells": walkable_cells, "resources": resources}
+
+
+func _get_orthogonal_neighbor_elevations(cell: Vector2i, tile_lookup: Dictionary) -> PackedInt32Array:
+	## Chunk-local neighbours reuse generated tile metadata; only boundary neighbours require another noise sample.
+	var elevations := PackedInt32Array()
+	for offset: Vector2i in [Vector2i.UP, Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT]:
+		var neighbour_cell: Vector2i = cell + offset
+		var neighbour_info: Dictionary = tile_lookup.get(neighbour_cell, {})
+		if neighbour_info.is_empty():
+			neighbour_info = get_tile_info(neighbour_cell)
+		elevations.append(int(neighbour_info.get("elevation", 0)))
+	return elevations
 
 func export_generation_state() -> Dictionary:
 	return {

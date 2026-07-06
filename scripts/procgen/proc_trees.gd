@@ -12,14 +12,17 @@ static func get_supported_archetypes() -> PackedStringArray:
 static func get_supported_terrain_tags() -> PackedStringArray:
 	return TreeProfiles.get_supported_terrain_tags()
 
+static func get_supported_presentation_profiles() -> PackedStringArray:
+	return TreeProfiles.get_supported_presentation_profiles()
+
 static func _size_scale_for_tier(size_tier: String) -> float:
 	return TreeProfiles.get_size_scale_for_tier(size_tier)
 
-static func _resolve_canvas_size(rng: ProcRng, archetype: String, base_size: int, size_tier: String) -> int:
+static func _resolve_canvas_size(rng: ProcRng, archetype: String, base_size: int, size_tier: String, presentation_profile: String) -> int:
 	var size: int = int(round(float(base_size + rng.next_int(-3, 3)) * _size_scale_for_tier(size_tier)))
 	if archetype == "conifer":
 		size += 1
-	elif archetype == TreeProfiles.INTERNAL_ARCHETYPE_SAPLING:
+	if presentation_profile == TreeProfiles.PRESENTATION_PROFILE_SAPLING:
 		size -= 2
 	return ProcPrimitives.clamp_int(size, 14, 42)
 
@@ -278,18 +281,36 @@ static func _generate_sapling(canvas: ProcCanvas, size: int, rng: ProcRng, terra
 	ProcPrimitives.batch_stamp_ellipses(canvas, layers["highlights"], highlight[0], highlight[1], highlight[2], highlight[3], 1.2, 0.4)
 	_finish_tree(canvas, rng, canopy_cx, canopy_cy, base_radius * 1.9)
 
-static func generate_tree(seed: int, size: int = 20, archetype: String = "", terrain_tag: String = "default", size_tier: String = "medium") -> Dictionary:
-	var resolved_archetype: String = _resolve_archetype(seed, archetype, terrain_tag)
+static func generate_tree(seed: int, size: int = 20, archetype: String = "", terrain_tag: String = "default", size_tier: String = "medium", presentation_profile: String = "mature") -> Dictionary:
+	## Presentation profiles select visual composition and scale only. They never
+	## represent gameplay age or mutate the generated resource record.
+	var requested_archetype: String = archetype
+	var resolved_profile: String = TreeProfiles.normalize_presentation_profile(presentation_profile)
+	if requested_archetype == TreeProfiles.INTERNAL_ARCHETYPE_SAPLING:
+		# Preserve compatibility with the former internal entry point while
+		# exposing sapling as a supported presentation profile.
+		requested_archetype = "deciduous"
+		resolved_profile = TreeProfiles.PRESENTATION_PROFILE_SAPLING
+	var resolved_archetype: String = _resolve_archetype(seed, requested_archetype, terrain_tag)
+	var resolved_size_tier: String = TreeProfiles.resolve_size_tier_for_profile(resolved_profile, size_tier)
 	var rng := ProcRng.new(seed)
-	var canvas_size: int = _resolve_canvas_size(rng, resolved_archetype, size, size_tier)
+	var canvas_size: int = _resolve_canvas_size(rng, resolved_archetype, size, resolved_size_tier, resolved_profile)
 	var canvas := ProcCanvas.new(canvas_size, canvas_size)
-	match resolved_archetype:
-		"conifer":
-			_generate_conifer(canvas, canvas_size, rng, terrain_tag)
-		"dead":
-			_generate_dead(canvas, canvas_size, rng)
-		"sapling":
-			_generate_sapling(canvas, canvas_size, rng, terrain_tag)
-		_:
-			_generate_deciduous(canvas, canvas_size, rng, terrain_tag)
-	return {"canvas": canvas, "archetype": resolved_archetype}
+	if resolved_profile == TreeProfiles.PRESENTATION_PROFILE_SAPLING and resolved_archetype == "deciduous":
+		_generate_sapling(canvas, canvas_size, rng, terrain_tag)
+	else:
+		# Conifer and dead identities remain recognizable at smaller profile
+		# scales by retaining their established generators and palettes.
+		match resolved_archetype:
+			"conifer":
+				_generate_conifer(canvas, canvas_size, rng, terrain_tag)
+			"dead":
+				_generate_dead(canvas, canvas_size, rng)
+			_:
+				_generate_deciduous(canvas, canvas_size, rng, terrain_tag)
+	return {
+		"canvas": canvas,
+		"archetype": resolved_archetype,
+		"presentation_profile": resolved_profile,
+		"size_tier": resolved_size_tier,
+	}

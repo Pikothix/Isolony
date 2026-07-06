@@ -14,13 +14,14 @@ static func build_resource_visual_config(spawn_data: Dictionary, chunk_coord: Ve
 	var visual_definition: Dictionary = ResourceVisualDefinitionRef.get_definition(scene_key)
 	var procedural_profile_id: String = String(visual_definition.get("procedural_profile_id", "none"))
 	var terrain_tag: String = String(spawn_data.get("terrain", ""))
-	var use_procedural: bool = (procedural_profile_id == "tree" and use_procedural_tree_sprites) or (procedural_profile_id == "rock" and use_procedural_rock_sprites)
+	var use_procedural: bool = (procedural_profile_id == "tree" and use_procedural_tree_sprites) or (procedural_profile_id == "rock" and use_procedural_rock_sprites) or procedural_profile_id == "bush"
 	var local_cell: Vector2i = spawn_data["cell"] - chunk_coord * chunk_size
 	var full_seed: int = ProcRng.derive_resource_seed(chunk_coord, local_cell, world_seed, scene_key)
 	var visual_config: Dictionary = {
 		"use_procedural_sprite": use_procedural,
 		"visual_definition_id": scene_key,
 		"placeholder_visual_id": String(visual_definition.get("placeholder_visual_id", "")),
+		"visual_variant": visual_definition.get("visual_variant", {}).duplicate(true),
 		"icon_path": String(visual_definition.get("icon_path", "")),
 		"procedural_profile_id": procedural_profile_id,
 		"procedural_sprite_kind": procedural_profile_id if use_procedural else "none",
@@ -45,4 +46,11 @@ static func build_resource_visual_config(spawn_data: Dictionary, chunk_coord: Ve
 		visual_config["procedural_size_tier"] = RockProfiles.get_runtime_size_tier(full_seed, String(visual_config["procedural_terrain_tag"]))
 		visual_config["procedural_sprite_size"] = resolve_rock_sprite_size(String(visual_config["procedural_size_tier"]), rock_small_size, rock_medium_size, rock_large_size)
 		visual_config["procedural_archetype"] = RockProfiles.resolve_archetype(full_seed, "", String(visual_config["procedural_terrain_tag"]))
+	elif procedural_profile_id == "bush":
+		# Bushes are generated on demand and capped to bound the shared cache.
+		# They are intentionally not added to startup prewarm.
+		visual_config["procedural_variant_cap"] = 8
+		visual_config["procedural_terrain_tag"] = terrain_tag
+		visual_config["procedural_size_tier"] = "small"
+		visual_config["procedural_sprite_size"] = 26
 	return visual_config

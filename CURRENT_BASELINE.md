@@ -21,6 +21,8 @@ This document records the current repository baseline. It describes the current 
 - `WorldGenerator` (`scripts/world/world_generator.gd`)
 - `ChunkManager` (`scripts/world/chunk_manager.gd`)
   - `TerrainLayer` (`TileMapLayer`)
+  - `TerrainVisualRoot`
+  - `DebugElevationRoot`
   - `GameplayYSort`
 	- `StockpileZoneRoot`
 	- `GroundItemRoot`
@@ -47,13 +49,15 @@ Scene-level values currently override some script defaults, including:
 
 ## Current System Ownership
 
-- `scripts/main.gd`: scene coordination, dependency injection, resource/time UI, active Normal/Build/Harvest mode ownership, dormant legacy stockpile-mode compatibility, colonist selection, manual Move input, and request routing.
+- `scripts/main.gd`: scene coordination, dependency injection, resource/time UI, active Normal/Build/Harvest/debug-cliff mode ownership, dormant legacy stockpile-mode compatibility, colonist selection, manual Move input, and request routing.
 - `scripts/simulation/world_state.gd`: authoritative construction/storage-component/material-delivery/harvest-order/stockpile-zone/ground-item lifecycle, bounded deterministic availability snapshots, completed-building effects/storage-capacity derivation, and validated stockpile coordination.
 - `scripts/simulation/time_state.gd`: clock time, day/night phase, clock labels, clock scaling, clock pause state, and time/phase signals. Its pause/scale values do not pause or scale all colonist simulation.
 - `scripts/simulation/resource_stockpile.gd`: abstract stored totals/capacity, construction resource earmarks, haul storage-capacity reservations, atomic mutations, and notifications.
 - `scripts/world/world_generator.gd`: deterministic noise setup, climate sampling, elevation classification, terrain classification, tile info creation, walkability lookup, chunk data generation, and resource spawn planning calls.
 - `scripts/world/terrain_config.gd`: terrain definitions, tile atlas coordinates, display names, selectable placement terrain entries, walkability, mineability, and terrain support queries for trees, rocks, and berry bushes.
-- `scripts/world/chunk_manager.gd`: chunk/resource streaming, terrain mutation, live generated-resource indexes, tree/rock/berry depletion tracking, harvest snapshot/commit integration, and construction/stockpile-zone/ground-item visual projection.
+- `scripts/world/chunk_manager.gd`: chunk/resource streaming, terrain mutation, live generated-resource indexes, tree/rock/berry depletion tracking, harvest snapshot/commit integration, and unified terrain/construction/stockpile-zone/ground-item visual projection.
+- `scripts/world/cell_render_info.gd`: presentation-only top/support atlas selection and the shared base/top/support anchor model used by chunk rendering, debug markers, and debug picking.
+- `scripts/world/elevation_cliff_visual.gd`: presentation-only renderer for `CellRenderInfo` records; the legacy filename remains, but it now renders E0/E1/E2 terrain and contains no polygon cliff code.
 - `scripts/world/reachability_query.gd`: stateless, bounded orthogonal BFS over currently loaded cells. It reads effective terrain and resource occupancy from `ChunkManager` plus construction occupancy from `WorldState`; it owns no simulation state or cache.
 - `scripts/world/stockpile_zone_visual.gd`: reconstructible presentation-only marker for one loaded stockpile-zone cell.
 - `scripts/world/ground_item_visual.gd`: reconstructible presentation-only placeholder for one physical resource item and amount.
@@ -170,10 +174,14 @@ Near-term risk: terrain additions can still drift if `WorldGenerator._classify_t
 Generated tile info now includes `elevation`, `mineable`, and elevation-aware `walkable` values. Elevation is derived from generated climate/height data and is not saved per cell.
 
 - `0`: low/normal ground.
-- `1`: raised ground; currently rendered with the base terrain and remains walkable when the terrain is walkable.
-- `2`: cliff/high rock; currently classified as `ROCK_WALL`, uses existing stone atlas tiles as a placeholder, is non-walkable, and is marked mineable for future mining work.
+- `1`: raised ground; ordinary terrain remains at the world cell and one row-0 block is added at `(0, -16)`.
+- `2`: cliff/high rock; currently classified as `ROCK_WALL`, is non-walkable and mineable, and adds a row-1 support at `(0, -16)` plus a row-0 top at `(0, -32)`.
 
 `ChunkManager.get_effective_tile_info(cell)`, `get_cell_elevation(cell)`, and `is_cell_mineable(cell)` expose generated/manual-effective tile metadata without making `TerrainLayer` authoritative.
+
+`node_2d.tscn` remains an atlas convention reference only. Runtime terrain keeps the TileSet's ordinary unshifted full-block tiles: `TerrainLayer` draws one base tile for every loaded world cell, so E0 is the normal terrain path. `CellRenderInfo` converts elevated effective tiles into world-cell stack records with repeated `(0, -16)` offsets and owns the visible-top diamond anchor. One global `ElevationStackVisual` under `TerrainVisualRoot` draws only E1/E2 additions in world-cell coordinates. Chunk streaming changes the set of records, never their visual origin. There is no chunk-local terrain renderer, duplicate same-level surface, guide geometry, tint, or polygon cliff renderer.
+
+Pressing `P` enters Main-owned Debug Cliff mode and disables other control modes. Debug targeting tests loaded cells around the flat fallback against `CellRenderInfo`'s world-space visible-top diamonds. Each cached hover, translucent left-click, or solid right-click marker passes a world-cell helper record through the same `ElevationStackVisual`; a wrapping `CanvasGroup` applies opacity once to the composed block. The hover label reports `E0`, `E1`, or `E2`; an `E0` marker remains a one-level comparison block labeled `E0`. Escape or `P` removes the hover marker. Placed markers are removed when their chunk unloads or the scene ends and are never serialized.
 
 ## Save/Load Status
 

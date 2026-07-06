@@ -12,6 +12,8 @@
 [ext_resource type="Script" path="res://scripts/ui/bottom_toolbar.gd" id="14_bottom_toolbar"]
 [ext_resource type="Script" path="res://scripts/ui/work_priority_table.gd" id="15_work_priority_table"]
 [ext_resource type="Script" path="res://scripts/ui/storage_inspector_panel.gd" id="16_storage_inspector_panel"]
+[ext_resource type="Script" path="res://scripts/ui/render_debug_panel.gd" id="17_render_debug_panel"]
+[ext_resource type="Script" path="res://scripts/ui/resource_inspector_panel.gd" id="18_resource_inspector_panel"]
 
 [node name="Main" type="Node2D" unique_id=1855439718]
 script = ExtResource("1_main_script")
@@ -30,6 +32,21 @@ procedural_rock_large_size = 48
 
 [node name="TerrainLayer" type="TileMapLayer" parent="ChunkManager" unique_id=2131718609]
 tile_set = ExtResource("6_tileset")
+
+[node name="TerrainVisualRoot" type="Node2D" parent="ChunkManager"]
+
+[node name="DebugElevationRoot" type="Node2D" parent="ChunkManager"]
+
+[node name="ElevationLevelLabel" type="Label" parent="ChunkManager/DebugElevationRoot"]
+visible = false
+z_index = 120
+mouse_filter = 2
+theme_override_colors/font_color = Color(1, 0.9, 0.25, 1)
+theme_override_colors/font_shadow_color = Color(0.05, 0.04, 0.02, 0.9)
+theme_override_constants/shadow_offset_x = 1
+theme_override_constants/shadow_offset_y = 1
+theme_override_font_sizes/font_size = 12
+text = "E0"
 
 [node name="GameplayYSort" type="Node2D" parent="ChunkManager" unique_id=2034294451]
 y_sort_enabled = true
@@ -58,6 +75,56 @@ script = ExtResource("5_camera_script")
 max_zoom = 200.0
 
 [node name="CanvasLayer" type="CanvasLayer" parent="." unique_id=123191144]
+
+[node name="RenderDebugPanel" type="PanelContainer" parent="CanvasLayer"]
+visible = false
+offset_left = 12.0
+offset_top = 188.0
+offset_right = 312.0
+offset_bottom = 350.0
+script = ExtResource("17_render_debug_panel")
+
+[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/RenderDebugPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 8
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/RenderDebugPanel/MarginContainer"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="TitleLabel" type="Label" parent="CanvasLayer/RenderDebugPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "Render Debug (F3)"
+
+[node name="ShaderEnabled" type="CheckBox" parent="CanvasLayer/RenderDebugPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Shader cliff rims enabled"
+
+[node name="DirectionRow" type="HBoxContainer" parent="CanvasLayer/RenderDebugPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="DirectionLabel" type="Label" parent="CanvasLayer/RenderDebugPanel/MarginContainer/VBoxContainer/DirectionRow"]
+layout_mode = 2
+text = "Directions"
+
+[node name="DirectionMode" type="OptionButton" parent="CanvasLayer/RenderDebugPanel/MarginContainer/VBoxContainer/DirectionRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="DebugElevation" type="CheckBox" parent="CanvasLayer/RenderDebugPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Show elevation texture"
+
+[node name="FallbackHint" type="Label" parent="CanvasLayer/RenderDebugPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.7, 0.7, 0.7, 1)
+theme_override_font_sizes/font_size = 11
+text = "Shader off uses the CPU rim fallback."
 
 [node name="PanelContainer" type="PanelContainer" parent="CanvasLayer" unique_id=612678936]
 offset_left = 12.0
@@ -272,6 +339,60 @@ offset_top = 188.0
 offset_right = 300.0
 offset_bottom = 392.0
 script = ExtResource("16_storage_inspector_panel")
+
+[node name="ResourceInspectorPanel" type="PanelContainer" parent="CanvasLayer"]
+visible = false
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -332.0
+offset_top = -286.0
+offset_right = -12.0
+offset_bottom = -102.0
+grow_horizontal = 0
+grow_vertical = 0
+script = ExtResource("18_resource_inspector_panel")
+
+[node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/ResourceInspectorPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 10
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CanvasLayer/ResourceInspectorPanel/MarginContainer"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="TitleLabel" type="Label" parent="CanvasLayer/ResourceInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.72, 0.78, 0.84, 1)
+theme_override_font_sizes/font_size = 12
+text = "RESOURCE INSPECTOR"
+
+[node name="NameLabel" type="Label" parent="CanvasLayer/ResourceInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "Deciduous Tree"
+
+[node name="KindLabel" type="Label" parent="CanvasLayer/ResourceInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Kind: Tree"
+
+[node name="YieldLabel" type="Label" parent="CanvasLayer/ResourceInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Wood x8"
+
+[node name="LocationLabel" type="Label" parent="CanvasLayer/ResourceInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+text = "Cell: (0, 0)  |  Elevation: 0"
+
+[node name="VariantLabel" type="Label" parent="CanvasLayer/ResourceInspectorPanel/MarginContainer/VBoxContainer"]
+layout_mode = 2
+autowrap_mode = 2
+text = "Variant: Deciduous | No fruit"
 
 [node name="MarginContainer" type="MarginContainer" parent="CanvasLayer/StorageInspectorPanel"]
 layout_mode = 2

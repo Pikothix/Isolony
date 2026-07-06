@@ -1,7 +1,7 @@
 extends Node2D
 
 ## Purpose: Coordinate the playable scene, transient control tools, and requests into simulation authorities.
-## Responsibility: Own player input, selection, transient Move requests, active Build/Harvest control modes, and previews while retaining dormant legacy stockpile-zone compatibility state.
+## Responsibility: Own player input, selection, transient Move requests, active Build/Harvest/debug-cliff control modes, and previews while retaining dormant legacy stockpile-zone compatibility state.
 ## Assumption: Area designation considers only currently loaded resources and every mutation is validated by WorldState.
 
 const TerrainConfigRef = preload("res://scripts/world/terrain_config.gd")
@@ -17,6 +17,7 @@ const AREA_DRAG_THRESHOLD_PIXELS := 6.0
 @onready var _selected_tile_panel: SelectedTilePanel = $CanvasLayer/SelectedTilePanel
 @onready var _colonist_info_panel: PanelContainer = $CanvasLayer/ColonistInfoPanel
 @onready var _storage_inspector_panel: PanelContainer = $CanvasLayer/StorageInspectorPanel
+@onready var _resource_inspector_panel: PanelContainer = $CanvasLayer/ResourceInspectorPanel
 @onready var _bottom_toolbar: PanelContainer = $CanvasLayer/BottomToolbar
 @onready var _work_priority_table: PanelContainer = $CanvasLayer/WorkPriorityPanel
 @onready var _colonist_manager: ColonistManager = $ChunkManager/GameplayYSort/ColonistManager
@@ -27,6 +28,7 @@ var _selected_tile_index: int = 0
 var _placement_mode: bool = false
 var _harvest_mode: bool = false
 var _stockpile_mode: bool = false
+var _debug_cliff_mode: bool = false
 var _selected_building_id: String = DEFAULT_BUILDING_ID
 var _placement_preview: Node2D
 var _placement_result: Dictionary = {}
@@ -54,6 +56,7 @@ func _ready() -> void:
 	_world_state.day_phase_changed.connect(_on_day_phase_changed)
 	_world_state.set_placement_query(_chunk_manager)
 	_chunk_manager.set_world_state(_world_state)
+	_chunk_manager.resource_inspection_requested.connect(_on_resource_inspection_requested)
 	_colonist_manager.set_world_state(_world_state)
 	_work_priority_table.setup(_colonist_manager)
 	_colonist_manager.population_replaced.connect(_on_colonist_population_replaced)
@@ -75,6 +78,8 @@ func _process(delta: float) -> void:
 	_world_state.advance_time(delta)
 	if _placement_mode:
 		_update_placement_preview()
+	if _debug_cliff_mode:
+		_update_debug_cliff_preview()
 
 func _input(event: InputEvent) -> void:
 	## Observe area drags before collision picking. Tiny Harvest releases remain unhandled for exact ResourceNode clicks.
@@ -83,6 +88,7 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			if get_viewport().gui_get_hovered_control() == null:
+				_resource_inspector_panel.clear_selection()
 				_begin_area_drag(event.position)
 		elif _is_dragging_area():
 			var exceeded_threshold: bool = event.position.distance_to(_area_drag_start_screen_position) >= AREA_DRAG_THRESHOLD_PIXELS
@@ -126,6 +132,8 @@ func _update_resource_label() -> void:
 				action_text += " Created stockpile zone: %d cells." % int(_last_stockpile_zone_result.get("cell_count", 0))
 			else:
 				action_text += " Zone rejected: %s." % String(_last_stockpile_zone_result.get("reason", "invalid"))
+	elif _debug_cliff_mode:
+		action_text = "Debug Cliff: left-click translucent, right-click solid; P/Esc exits."
 	else:
 		action_text = "Normal selection. Use the bottom toolbar or B/H shortcuts."
 	_resource_label.text = "Wood: %d\nStone: %d\nFood: %d\nStorage: %d / %d\nTime: %s (%s)\n%s" % [
@@ -142,6 +150,9 @@ func _update_resource_label() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
+			KEY_P:
+				_set_debug_cliff_mode(not _debug_cliff_mode)
+				get_viewport().set_input_as_handled()
 			KEY_B:
 				_set_placement_mode(not _placement_mode)
 				get_viewport().set_input_as_handled()
@@ -155,7 +166,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				_attempt_cancel_construction()
 				get_viewport().set_input_as_handled()
 			KEY_ESCAPE:
-				if _placement_mode or _harvest_mode or _stockpile_mode:
+				if _placement_mode or _harvest_mode or _stockpile_mode or _debug_cliff_mode:
 					_cancel_control_mode()
 					get_viewport().set_input_as_handled()
 			KEY_1:
@@ -172,7 +183,13 @@ func _unhandled_input(event: InputEvent) -> void:
 				if _placement_mode:
 					_select_building("storehouse")
 	elif event is InputEventMouseButton and event.pressed and not event.is_echo():
-		if _placement_mode and event.button_index == MOUSE_BUTTON_LEFT:
+		if _debug_cliff_mode and event.button_index == MOUSE_BUTTON_LEFT:
+			_place_debug_cliff_marker(false)
+			get_viewport().set_input_as_handled()
+		elif _debug_cliff_mode and event.button_index == MOUSE_BUTTON_RIGHT:
+			_place_debug_cliff_marker(true)
+			get_viewport().set_input_as_handled()
+		elif _placement_mode and event.button_index == MOUSE_BUTTON_LEFT:
 			_attempt_place_construction()
 			get_viewport().set_input_as_handled()
 		elif _placement_mode and event.button_index == MOUSE_BUTTON_RIGHT:
@@ -201,6 +218,7 @@ func _set_placement_mode(enabled: bool) -> void:
 	if enabled:
 		_harvest_mode = false
 		_stockpile_mode = false
+		_exit_debug_cliff_mode()
 		_clear_area_drag()
 	_chunk_manager.set_harvest_designation_input_enabled(false)
 	_placement_preview.visible = enabled
@@ -214,6 +232,7 @@ func _set_harvest_mode(enabled: bool) -> void:
 	_harvest_mode = enabled
 	_placement_mode = false
 	_stockpile_mode = false
+	_exit_debug_cliff_mode()
 	_placement_preview.visible = false
 	_clear_area_drag()
 	if entering_mode:
@@ -227,6 +246,7 @@ func _set_stockpile_mode(enabled: bool) -> void:
 	_stockpile_mode = enabled
 	_placement_mode = false
 	_harvest_mode = false
+	_exit_debug_cliff_mode()
 	_placement_preview.visible = false
 	_clear_area_drag()
 	if entering_mode:
@@ -239,6 +259,7 @@ func _cancel_control_mode() -> void:
 	_placement_mode = false
 	_harvest_mode = false
 	_stockpile_mode = false
+	_exit_debug_cliff_mode()
 	_clear_area_drag()
 	_placement_preview.visible = false
 	_chunk_manager.set_harvest_designation_input_enabled(false)
@@ -253,6 +274,8 @@ func _update_control_mode_ui() -> void:
 		_bottom_toolbar.set_mode("Harvest Designation: click or drag", true)
 	elif _stockpile_mode:
 		_bottom_toolbar.set_mode("Stockpile Zone: drag tiles", true)
+	elif _debug_cliff_mode:
+		_bottom_toolbar.set_mode("Debug Cliff: inspect elevation", true)
 	else:
 		_bottom_toolbar.set_mode("Normal Selection", false)
 
@@ -263,7 +286,39 @@ func get_control_mode_name() -> String:
 		return "harvest"
 	if _stockpile_mode:
 		return "stockpile"
+	if _debug_cliff_mode:
+		return "debug_cliff"
 	return "normal"
+
+func _set_debug_cliff_mode(enabled: bool) -> void:
+	if not enabled:
+		_exit_debug_cliff_mode()
+		_update_resource_label()
+		_update_control_mode_ui()
+		return
+	_placement_mode = false
+	_harvest_mode = false
+	_stockpile_mode = false
+	_clear_area_drag()
+	_placement_preview.visible = false
+	_chunk_manager.set_harvest_designation_input_enabled(false)
+	_debug_cliff_mode = true
+	_update_debug_cliff_preview()
+	_update_resource_label()
+	_update_control_mode_ui()
+
+func _exit_debug_cliff_mode() -> void:
+	_debug_cliff_mode = false
+	_chunk_manager.clear_debug_elevation_preview()
+
+func _update_debug_cliff_preview() -> void:
+	var target_cell: Vector2i = _chunk_manager.get_debug_elevation_cell_at_world_position(get_global_mouse_position())
+	_chunk_manager.set_debug_elevation_preview(target_cell, true)
+
+func _place_debug_cliff_marker(solid: bool) -> void:
+	var target_cell: Vector2i = _chunk_manager.get_debug_elevation_cell_at_world_position(get_global_mouse_position())
+	if not _chunk_manager.place_debug_elevation_marker(target_cell, solid):
+		push_warning("Debug elevation marker requires a loaded cell.")
 
 func get_selected_building_id() -> String:
 	return _selected_building_id
@@ -462,6 +517,9 @@ func _attempt_place_selected_tile() -> void:
 		push_warning("Manual tile placement failed: %s" % String(result.get("reason", "unknown")))
 
 func _handle_world_selection() -> void:
+	# ResourceNode picking occurs on the matching release. Clearing here makes
+	# empty-terrain clicks dismiss the panel without competing for that release.
+	_resource_inspector_panel.clear_selection()
 	var clicked_colonist: Colonist = _colonist_manager.get_colonist_at_world_position(get_global_mouse_position())
 	if clicked_colonist != null:
 		_set_selected_colonist(clicked_colonist)
@@ -471,6 +529,10 @@ func _handle_world_selection() -> void:
 	if _select_storage_at_cell(selected_cell):
 		return
 	_attempt_place_selected_tile()
+
+
+func _on_resource_inspection_requested(inspection_data: Dictionary) -> void:
+	_resource_inspector_panel.display_resource(inspection_data)
 
 func _request_selected_colonist_move(screen_position: Vector2) -> Dictionary:
 	## Main translates presentation input; the selected Colonist owns validation and transient command state.

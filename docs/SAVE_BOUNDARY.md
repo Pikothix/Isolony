@@ -62,8 +62,10 @@ This boundary exists so future Codex tasks do not accidentally persist rendered 
 
 ## State Not To Save
 
-- `TileMapLayer` rendered cells that can be regenerated from seed/config plus manual tile deltas.
+- `TerrainLayer` base cells and the global elevation visual records that can be regenerated from seed/config plus manual tile deltas.
 - Generated elevation values that can be regenerated from seed/config.
+- `CellRenderInfo` records and global `ElevationStackVisual` layers reconstructed from effective E1/E2 terrain during chunk loading.
+- Debug Cliff mode state, hover/placed elevation markers, and the `E0`/`E1`/`E2` hover label.
 - Procedural sprite textures or `ProcSpriteCache` contents.
 - Staged resource spawn queues such as `_pending_resource_spawns`.
 - Loaded chunk dictionaries that only mirror the active streaming window.

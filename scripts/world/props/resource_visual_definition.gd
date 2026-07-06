@@ -12,6 +12,18 @@ const DEFINITIONS := {
 		"icon_path": "",
 		"procedural_profile_id": "tree",
 		"placeholder_visual_id": "tree_polygon",
+		"visual_variant": {
+			"kind": "tree_fruit_overlay",
+			"chance_percent": 28,
+			"min_count": 3,
+			"max_count": 7,
+			"allowed_archetypes": ["deciduous"],
+			"fallback_visual_size": Vector2(36.0, 38.0),
+			"palettes": [
+				[Color(0.82, 0.16, 0.12), Color(1.0, 0.38, 0.18)],
+				[Color(0.92, 0.55, 0.08), Color(1.0, 0.78, 0.2)],
+			],
+		},
 	},
 	"rock": {
 		"id": "rock",
@@ -24,7 +36,7 @@ const DEFINITIONS := {
 		"id": "berry_bush",
 		"scene_path": "res://scenes/entities/BerryBush.tscn",
 		"icon_path": "",
-		"procedural_profile_id": "none",
+		"procedural_profile_id": "bush",
 		"placeholder_visual_id": "berry_bush_polygon",
 	},
 }

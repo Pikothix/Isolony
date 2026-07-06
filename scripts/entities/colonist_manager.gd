@@ -103,6 +103,9 @@ func import_colonist_records(records: Array) -> Dictionary:
 		var colonist_id: String = String(record.get("colonist_id", ""))
 		if colonist_id.is_empty() or seen_ids.has(colonist_id):
 			return _build_import_result(false, "invalid_or_duplicate_colonist_id", 0, 0)
+		var world_space_id: String = String(record.get("world_space_id", ChunkManager.SURFACE_WORLD_SPACE_ID))
+		if world_space_id != ChunkManager.SURFACE_WORLD_SPACE_ID:
+			return _build_import_result(false, "unsupported_world_space_id", 0, 0)
 		seen_ids[colonist_id] = true
 	_clear_population()
 	_initial_population_created = true
@@ -116,7 +119,17 @@ func import_colonist_records(records: Array) -> Dictionary:
 		var cell: Vector2i = _cell_from_record(record)
 		colonist.name = colonist_id
 		add_child(colonist)
-		colonist.initialize(_chunk_manager, cell, _world_state, colonist_id, String(record.get("first_name", "")), String(record.get("last_name", "")))
+		colonist.initialize(
+			_chunk_manager,
+			cell,
+			_world_state,
+			colonist_id,
+			String(record.get("first_name", "")),
+			String(record.get("last_name", "")),
+			{},
+			[],
+			String(record.get("world_space_id", ChunkManager.SURFACE_WORLD_SPACE_ID))
+		)
 		var import_result: Dictionary = colonist.import_state(record)
 		if not bool(import_result.get("ok", false)):
 			_clear_population()

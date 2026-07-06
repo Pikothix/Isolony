@@ -9,12 +9,26 @@ const ACTIVE_RUNTIME_SIZE_TIERS: Array[String] = ["large"]
 const ACTIVE_PREWARM_ARCHETYPES: Array[String] = ["deciduous", "conifer", "dead"]
 const ACTIVE_PREWARM_BIOME_TAGS: Array[String] = ["GRASS", "DARK_DIRT", "MUD"]
 
+# Presentation profiles are visual composition presets only. Runtime-generated
+# trees remain on the mature profile unless a caller explicitly requests one of
+# the smaller profiles (for example, the debug gallery).
+const PRESENTATION_PROFILE_SAPLING: String = "sapling"
+const PRESENTATION_PROFILE_JUVENILE: String = "juvenile"
+const PRESENTATION_PROFILE_MATURE: String = "mature"
+const SUPPORTED_PRESENTATION_PROFILES: Array[String] = [
+	PRESENTATION_PROFILE_SAPLING,
+	PRESENTATION_PROFILE_JUVENILE,
+	PRESENTATION_PROFILE_MATURE,
+]
+
 # Publicly supported tree controls.
 const SUPPORTED_ARCHETYPES: Array[String] = ["deciduous", "conifer", "dead"]
 const SUPPORTED_BIOME_TAGS: Array[String] = ["default", "GRASS", "DARK_DIRT", "MUD"]
 
 # Available internally, but not part of the active runtime baseline.
 const AVAILABLE_SIZE_TIERS: Array[String] = ["small", "medium", "large"]
+# Retained as a compatibility alias for direct callers that previously selected
+# the internal sapling generator through the archetype argument.
 const INTERNAL_ARCHETYPE_SAPLING: String = "sapling"
 
 const TRUNK_PALETTES: Array = [[90, 58, 32], [100, 50, 25], [85, 70, 55], [60, 40, 20]]
@@ -41,6 +55,9 @@ static func get_active_prewarm_terrain_tags() -> PackedStringArray:
 static func get_supported_archetypes() -> PackedStringArray:
 	return PackedStringArray(SUPPORTED_ARCHETYPES)
 
+static func get_supported_presentation_profiles() -> PackedStringArray:
+	return PackedStringArray(SUPPORTED_PRESENTATION_PROFILES)
+
 static func get_supported_terrain_tags() -> PackedStringArray:
 	return PackedStringArray(SUPPORTED_BIOME_TAGS)
 
@@ -55,6 +72,20 @@ static func get_size_scale_for_tier(size_tier: String) -> float:
 			return 1.28
 		_:
 			return 1.0
+
+static func normalize_presentation_profile(profile: String) -> String:
+	if profile in SUPPORTED_PRESENTATION_PROFILES:
+		return profile
+	return PRESENTATION_PROFILE_MATURE
+
+static func resolve_size_tier_for_profile(profile: String, requested_size_tier: String) -> String:
+	match normalize_presentation_profile(profile):
+		PRESENTATION_PROFILE_SAPLING:
+			return "small"
+		PRESENTATION_PROFILE_JUVENILE:
+			return "medium"
+		_:
+			return requested_size_tier
 
 static func pick_canopy_base(rng, terrain_tag: String, archetype: String) -> Array:
 	if archetype == "conifer":

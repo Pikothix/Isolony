@@ -84,9 +84,12 @@ This document is a concise map of the current Godot colony sim prototype. It dis
 6. `WorldGenerator._classify_terrain()` directly chooses the terrain name; elevation `2` becomes `ROCK_WALL`.
 7. `TerrainConfig` supplies atlas tile variants, walkability, and mineability through query helpers.
 8. `PropSpawnHelpers.build_resource_spawn()` checks terrain support and deterministic density rolls for tree, rock, or Berry Bush spawn data.
-9. `ChunkManager` writes terrain tiles immediately and spawns resource nodes immediately or through staged batches.
-10. `PropVisualConfig` and the procgen profile scripts provide deterministic procedural sprite settings.
-11. Manual tile overrides and depleted resource ids are stored outside loaded chunk dictionaries and reapplied/skipped during chunk generation.
+9. `CellRenderInfo` is the single presentation coordinate model for elevated terrain. From the actual world cell anchor it resolves row-0 top and row-1 support atlas coordinates, repeated `(0, -16)` stack anchors, and the visible-top diamond used by Debug Cliff picking.
+10. `TerrainLayer` renders the ordinary base tile for every loaded world cell. One global `ElevationStackVisual` consumes only E1/E2 `CellRenderInfo` records under `TerrainVisualRoot`, using the records' world cells and layer offsets directly. Chunk streaming adds or removes records without introducing chunk-local transforms. The renderer contains no polygon draw callback and does not affect terrain metadata, collision, pathfinding, or save state.
+11. Resource nodes spawn immediately or through staged batches, with `PropVisualConfig` and procgen profile scripts providing deterministic procedural sprite settings.
+12. Manual tile overrides and depleted resource ids are stored outside loaded chunk dictionaries and reapplied/skipped during chunk generation.
+
+Debug Cliff mode is a transient Main-owned input mode toggled by `P`. Main supplies the mouse world position to a debug-only `ChunkManager` picker. It searches loaded cells around the ordinary flat-grid result and asks `CellRenderInfo` for the same world-space visible-top center and diamond convention used by generated terrain, resolving overlaps by center distance and then elevation; normal selection, placement, and pathing retain `world_to_cell()`. Debug markers pass one world-cell `CellRenderInfo` record through the same `ElevationStackVisual`; only a wrapping `CanvasGroup` adds transient opacity. The hover label reads effective elevation without mutating it. Debug nodes carry no authority and are excluded from persistence.
 
 Generated-resource authority is divided across deterministic spawn data, `ChunkManager`'s live index and depletion set, and the loaded `ResourceNode` record. The live node is therefore more than a visual projection during harvest validation, even though it does not authorize stockpile or order mutations.
 

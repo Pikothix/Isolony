@@ -118,6 +118,7 @@ var last_name: String = ""
 var nickname: String = ""
 var chunk_manager: ChunkManager
 var world_state: Node
+var current_world_space_id: String = ChunkManager.SURFACE_WORLD_SPACE_ID
 var current_cell: Vector2i = Vector2i.ZERO
 var target_cell: Vector2i = Vector2i.ZERO
 var rest: float = 100.0
@@ -145,6 +146,7 @@ var _haul_destination_cell: Vector2i = Vector2i.ZERO
 var _haul_travel_elapsed: float = 0.0
 var _carried_item: Dictionary = {}
 var _current_path: Array[Vector2i] = []
+var _current_path_world_space_id: String = ChunkManager.SURFACE_WORLD_SPACE_ID
 var _path_index: int = 0
 var _target_position: Vector2 = Vector2.ZERO
 var _pause_timer: float = 0.0
@@ -179,7 +181,8 @@ func initialize(
 	assigned_first_name: String = "",
 	assigned_last_name: String = "",
 	initial_skills: Dictionary = {},
-	initial_trait_ids: Array[String] = []
+	initial_trait_ids: Array[String] = [],
+	initial_world_space_id: String = ChunkManager.SURFACE_WORLD_SPACE_ID
 ) -> void:
 	chunk_manager = manager
 	world_state = simulation_state
@@ -189,6 +192,7 @@ func initialize(
 	_set_initial_skills(initial_skills)
 	_set_initial_traits(initial_trait_ids)
 	_set_initial_work_priorities({})
+	current_world_space_id = initial_world_space_id if initial_world_space_id == ChunkManager.SURFACE_WORLD_SPACE_ID else ChunkManager.SURFACE_WORLD_SPACE_ID
 	current_cell = spawn_cell
 	target_cell = spawn_cell
 	global_position = chunk_manager.get_cell_world_position(spawn_cell) + Vector2(0, -6)
@@ -385,6 +389,7 @@ func get_needs_state() -> Dictionary:
 		"is_night": world_state != null and world_state.is_night(),
 		"is_warm": _is_environment_warm,
 		"is_sheltered": _is_environment_sheltered,
+		"world_space_id": current_world_space_id,
 		"cell": current_cell,
 	}
 
@@ -404,6 +409,7 @@ func export_state() -> Dictionary:
 		"first_name": first_name,
 		"last_name": last_name,
 		"nickname": nickname,
+		"world_space_id": current_world_space_id,
 		"cell": [current_cell.x, current_cell.y],
 		"world_position": [global_position.x, global_position.y],
 		"needs": {
@@ -423,6 +429,10 @@ func import_state(data: Dictionary) -> Dictionary:
 	var saved_id: String = String(data.get("colonist_id", ""))
 	if saved_id.is_empty() or saved_id != colonist_id:
 		return {"ok": false, "reason": "colonist_id_mismatch", "relationships": []}
+	var imported_world_space_id: String = String(data.get("world_space_id", ChunkManager.SURFACE_WORLD_SPACE_ID))
+	if imported_world_space_id != ChunkManager.SURFACE_WORLD_SPACE_ID:
+		return {"ok": false, "reason": "unsupported_world_space_id", "relationships": []}
+	current_world_space_id = imported_world_space_id
 	first_name = String(data.get("first_name", first_name)).strip_edges()
 	last_name = String(data.get("last_name", last_name)).strip_edges()
 	nickname = String(data.get("nickname", "")).strip_edges()
@@ -810,15 +820,15 @@ func _release_job_candidate_reservation(job: Dictionary, reason: String) -> void
 
 func _query_path(cell: Vector2i, allow_target_construction: bool = false, allow_target_resource: bool = false) -> Dictionary:
 	if chunk_manager == null or world_state == null:
-		return {"ok": false, "reachable": false, "path": [], "reason": "query_context_unavailable"}
-	return ReachabilityQueryRef.find_path(chunk_manager, world_state, current_cell, cell, {
+		return {"ok": false, "reachable": false, "path": [], "reason": "query_context_unavailable", "world_space_id": current_world_space_id}
+	return ReachabilityQueryRef.find_path(chunk_manager, world_state, current_world_space_id, current_cell, cell, {
 		"allow_target_construction": allow_target_construction,
 		"allow_target_resource": allow_target_resource,
 	})
 
 func _query_job_path(start_cell: Vector2i, destination_cell: Vector2i, options: Dictionary = {}) -> Dictionary:
 	_increment_job_scheduling_counter("path_queries_requested")
-	var result: Dictionary = ReachabilityQueryRef.find_path(chunk_manager, world_state, start_cell, destination_cell, options)
+	var result: Dictionary = ReachabilityQueryRef.find_path(chunk_manager, world_state, current_world_space_id, start_cell, destination_cell, options)
 	_increment_job_scheduling_counter("path_queries_succeeded" if bool(result.get("reachable", false)) else "path_queries_failed")
 	return result
 
@@ -836,6 +846,7 @@ func _set_initial_job_evaluation_stagger() -> void:
 
 func _apply_path(path_result: Dictionary, final_cell: Vector2i) -> void:
 	_current_path.clear()
+	_current_path_world_space_id = String(path_result.get("world_space_id", ""))
 	for cell_value: Variant in path_result.get("path", []):
 		if typeof(cell_value) == TYPE_VECTOR2I:
 			_current_path.append(cell_value)
@@ -848,6 +859,7 @@ func _apply_path(path_result: Dictionary, final_cell: Vector2i) -> void:
 
 func _clear_path() -> void:
 	_current_path.clear()
+	_current_path_world_space_id = current_world_space_id
 	_path_index = 0
 
 func _try_start_need_seeking() -> bool:
@@ -989,9 +1001,12 @@ func _move_towards_target(delta: float) -> void:
 	if not has_active_path():
 		_complete_path_arrival()
 		return
+	if _current_path_world_space_id != current_world_space_id:
+		_fail_current_movement("path_world_space_mismatch")
+		return
 	var next_cell: Vector2i = _current_path[_path_index]
 	var options: Dictionary = _get_current_path_options()
-	if not chunk_manager.can_move_between_cells(current_cell, next_cell) or not ReachabilityQueryRef.is_cell_traversable(chunk_manager, world_state, next_cell, current_cell, target_cell, options):
+	if not chunk_manager.can_move_between_cells(current_cell, next_cell, current_world_space_id) or not ReachabilityQueryRef.is_cell_traversable(chunk_manager, world_state, current_world_space_id, next_cell, current_cell, target_cell, options):
 		_fail_current_movement("path_became_blocked")
 		return
 	_target_position = chunk_manager.get_cell_world_position(next_cell) + Vector2(0, -6)
@@ -1135,6 +1150,11 @@ func _process_hauling() -> void:
 		_finish_haul_job("haul_deposited" if bool(result.get("ok", false)) else "deposit_%s" % String(result.get("reason", "failed")), bool(result.get("ok", false)))
 
 func _pick_new_wander_target() -> void:
+	# Loaded-cell pathing cannot produce a valid destination after streaming has
+	# unloaded this colonist's current cell. Remain idle until it is relevant again.
+	if not chunk_manager.is_cell_loaded(current_cell):
+		_enter_idle()
+		return
 	for _attempt in range(12):
 		var candidate: Vector2i = chunk_manager.get_random_walkable_cell_near(current_cell, wander_radius, 48)
 		var path_result: Dictionary = _query_path(candidate)

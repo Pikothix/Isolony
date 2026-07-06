@@ -37,9 +37,16 @@ static func berry_bush_density_for_terrain(terrain: String, berry_bush_density: 
 		_:
 			return 0.0
 
-static func build_resource_spawn(cell: Vector2i, tile_info: Dictionary, seed: int, tree_density: float, rock_density: float, berry_bush_density: float) -> Dictionary:
+static func build_resource_spawn(cell: Vector2i, tile_info: Dictionary, orthogonal_neighbor_elevations: PackedInt32Array, seed: int, tree_density: float, rock_density: float, berry_bush_density: float) -> Dictionary:
 	if not tile_info.walkable:
 		return {}
+	if orthogonal_neighbor_elevations.size() != 4:
+		push_error("Resource candidate validation requires four orthogonal neighbour elevations for cell %s." % cell)
+		return {}
+	var elevation: int = int(tile_info.get("elevation", 0))
+	for neighbour_elevation: int in orthogonal_neighbor_elevations:
+		if neighbour_elevation != elevation:
+			return {}
 	var terrain: String = String(tile_info.terrain)
 	# Trees and rocks intentionally share the same deterministic roll to preserve current exclusivity/order.
 	var roll: float = normalized_hash(cell.x, cell.y, seed, 97)

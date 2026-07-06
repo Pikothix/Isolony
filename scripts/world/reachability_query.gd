@@ -1,9 +1,9 @@
 extends RefCounted
 class_name ReachabilityQuery
 
-## Purpose: Answer bounded reachability questions across the currently loaded cell world.
+## Purpose: Answer bounded reachability questions inside one currently loaded WorldSpace.
 ## Responsibility: Build transient orthogonal cell paths from ChunkManager/WorldState read APIs without owning game state.
-## Assumptions: W1 has no diagonal movement, path cache, asynchronous search, or traversal outside loaded chunks.
+## Assumptions: Phase 1 supports only the surface WorldSpace and has no diagonal movement, path cache, asynchronous search, or traversal outside loaded chunks.
 
 const DEFAULT_MAX_VISITED_CELLS := 4096
 const ORTHOGONAL_NEIGHBOURS: Array[Vector2i] = [
@@ -14,17 +14,21 @@ const ORTHOGONAL_NEIGHBOURS: Array[Vector2i] = [
 ]
 
 
-static func find_path(chunk_manager: ChunkManager, world_state: Node, start_cell: Vector2i, target_cell: Vector2i, options: Dictionary = {}) -> Dictionary:
+static func find_path(chunk_manager: ChunkManager, world_state: Node, world_space_id: String, start_cell: Vector2i, target_cell: Vector2i, options: Dictionary = {}) -> Dictionary:
 	if chunk_manager == null or world_state == null:
-		return _build_result(false, false, [], "query_context_unavailable", 0)
-	if not chunk_manager.is_cell_loaded(start_cell):
-		return _build_result(false, false, [], "start_not_loaded", 0)
-	if not chunk_manager.is_cell_loaded(target_cell):
-		return _build_result(false, false, [], "target_not_loaded", 0)
+		return _build_result(false, false, [], "query_context_unavailable", 0, world_space_id)
+	if not chunk_manager.is_world_space_supported(world_space_id):
+		return _build_result(false, false, [], "unsupported_world_space_id", 0, world_space_id)
+	if world_space_id != chunk_manager.get_active_world_space_id():
+		return _build_result(false, false, [], "inactive_world_space", 0, world_space_id)
+	if not chunk_manager.is_cell_loaded(start_cell, world_space_id):
+		return _build_result(false, false, [], "start_not_loaded", 0, world_space_id)
+	if not chunk_manager.is_cell_loaded(target_cell, world_space_id):
+		return _build_result(false, false, [], "target_not_loaded", 0, world_space_id)
 	if start_cell == target_cell:
-		return _build_result(true, true, [], "reachable", 1)
-	if not is_cell_traversable(chunk_manager, world_state, target_cell, start_cell, target_cell, options):
-		return _build_result(false, false, [], "target_unreachable", 1)
+		return _build_result(true, true, [], "reachable", 1, world_space_id)
+	if not is_cell_traversable(chunk_manager, world_state, world_space_id, target_cell, start_cell, target_cell, options):
+		return _build_result(false, false, [], "target_unreachable", 1, world_space_id)
 
 	var max_visited_cells: int = maxi(int(options.get("max_visited_cells", DEFAULT_MAX_VISITED_CELLS)), 1)
 	var frontier: Array[Vector2i] = [start_cell]
@@ -37,27 +41,31 @@ static func find_path(chunk_manager: ChunkManager, world_state: Node, start_cell
 			var next_cell: Vector2i = current + offset
 			if came_from.has(next_cell):
 				continue
-			if not chunk_manager.can_move_between_cells(current, next_cell):
+			if not chunk_manager.can_move_between_cells(current, next_cell, world_space_id):
 				continue
-			if not is_cell_traversable(chunk_manager, world_state, next_cell, start_cell, target_cell, options):
+			if not is_cell_traversable(chunk_manager, world_state, world_space_id, next_cell, start_cell, target_cell, options):
 				continue
 			if came_from.size() >= max_visited_cells:
-				return _build_result(false, false, [], "search_limit_reached", came_from.size())
+				return _build_result(false, false, [], "search_limit_reached", came_from.size(), world_space_id)
 			came_from[next_cell] = current
 			if next_cell == target_cell:
-				return _build_result(true, true, _reconstruct_path(came_from, start_cell, target_cell), "reachable", came_from.size())
+				return _build_result(true, true, _reconstruct_path(came_from, start_cell, target_cell), "reachable", came_from.size(), world_space_id)
 			frontier.append(next_cell)
 
 	var reason := "search_limit_reached" if came_from.size() >= max_visited_cells else "target_unreachable"
-	return _build_result(false, false, [], reason, came_from.size())
+	return _build_result(false, false, [], reason, came_from.size(), world_space_id)
 
 
-static func is_cell_traversable(chunk_manager: ChunkManager, world_state: Node, cell: Vector2i, start_cell: Vector2i, target_cell: Vector2i, options: Dictionary = {}) -> bool:
-	if cell == start_cell:
-		return chunk_manager.is_cell_loaded(cell)
-	if not chunk_manager.is_cell_loaded(cell):
+static func is_cell_traversable(chunk_manager: ChunkManager, world_state: Node, world_space_id: String, cell: Vector2i, start_cell: Vector2i, target_cell: Vector2i, options: Dictionary = {}) -> bool:
+	if chunk_manager == null or world_state == null or not chunk_manager.is_world_space_supported(world_space_id):
 		return false
-	var tile_info: Dictionary = chunk_manager.get_effective_tile_info(cell)
+	if world_space_id != chunk_manager.get_active_world_space_id():
+		return false
+	if cell == start_cell:
+		return chunk_manager.is_cell_loaded(cell, world_space_id)
+	if not chunk_manager.is_cell_loaded(cell, world_space_id):
+		return false
+	var tile_info: Dictionary = chunk_manager.get_effective_tile_info(cell, world_space_id)
 	var terrain_name: String = String(tile_info.get("terrain", ""))
 	if not bool(tile_info.get("walkable", false)) or terrain_name == "WATER" or terrain_name == "ROCK_WALL" or bool(tile_info.get("mineable", false)):
 		return false
@@ -66,7 +74,7 @@ static func is_cell_traversable(chunk_manager: ChunkManager, world_state: Node, 
 	var construction: Dictionary = world_state.get_construction_site_at_cell(cell)
 	if not construction.is_empty() and not (is_target and bool(options.get("allow_target_construction", false))):
 		return false
-	if chunk_manager.is_cell_blocked_by_resource(cell) and not (is_target and bool(options.get("allow_target_resource", false))):
+	if chunk_manager.is_cell_blocked_by_resource(cell, world_space_id) and not (is_target and bool(options.get("allow_target_resource", false))):
 		return false
 	return true
 
@@ -84,11 +92,12 @@ static func _reconstruct_path(came_from: Dictionary, start_cell: Vector2i, targe
 	return reversed_path
 
 
-static func _build_result(ok: bool, reachable: bool, path: Array[Vector2i], reason: String, visited_cells: int) -> Dictionary:
+static func _build_result(ok: bool, reachable: bool, path: Array[Vector2i], reason: String, visited_cells: int, world_space_id: String) -> Dictionary:
 	return {
 		"ok": ok,
 		"reachable": reachable,
 		"path": path.duplicate(),
 		"reason": reason,
 		"visited_cells": visited_cells,
+		"world_space_id": world_space_id,
 	}
