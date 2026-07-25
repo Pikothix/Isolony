@@ -1,589 +1,340 @@
-extends Node2D
+extends Control
 
-## Purpose: Coordinate the playable scene, transient control tools, and requests into simulation authorities.
-## Responsibility: Own player input, selection, transient Move requests, active Build/Harvest/debug-cliff control modes, and previews while retaining dormant legacy stockpile-zone compatibility state.
-## Assumption: Area designation considers only currently loaded resources and every mutation is validated by WorldState.
+const DesktopWindowScript = preload("res://scripts/desktop/desktop_window.gd")
+const LocationViewScript = preload("res://scripts/presentation/job_location_view.gd")
+const StateScript = preload("res://scripts/simulation/windowed_colony_state.gd")
+const TravelOverlayScript = preload("res://scripts/presentation/travel_connection_overlay.gd")
+const COLONIST_TEXTURE = preload("res://assets/COLONIST.png")
 
-const TerrainConfigRef = preload("res://scripts/world/terrain_config.gd")
-const WorldStateScript = preload("res://scripts/simulation/world_state.gd")
-const BuildingDefinitionRef = preload("res://scripts/buildings/building_definition.gd")
-const ConstructionSiteVisualScript = preload("res://scripts/buildings/construction_site_visual.gd")
+@onready var colony_state: WindowedColonyState = $WindowedColonyState
+@onready var desktop: Control = $Desktop
+@onready var window_layer: Control = $Desktop/WindowLayer
+@onready var desktop_shell: DesktopShell = $Desktop/DesktopShell
+var _menu: Control
+var _windows: Array[Control] = []
+var _colonist_widgets: Dictionary = {}
+var _location_widget: Dictionary = {}
+var _location_widgets: Dictionary = {}
+var _locations_list: VBoxContainer
+var _selected_colonist_id := ""
+var _feedback: Label
+var _active_construction_tool := ""
+var _construction_tool_buttons: Dictionary = {}
+var _construction_feedback_labels: Dictionary = {}
+var _building_inspector_widgets: Dictionary = {}
+var _production_summary_labels: Dictionary = {}
 
-const DEFAULT_BUILDING_ID := "campfire"
-const AREA_DRAG_THRESHOLD_PIXELS := 6.0
-
-@onready var _chunk_manager: ChunkManager = $ChunkManager
-@onready var _resource_label: Label = $CanvasLayer/PanelContainer/MarginContainer/ResourceLabel
-@onready var _selected_tile_panel: SelectedTilePanel = $CanvasLayer/SelectedTilePanel
-@onready var _colonist_info_panel: PanelContainer = $CanvasLayer/ColonistInfoPanel
-@onready var _storage_inspector_panel: PanelContainer = $CanvasLayer/StorageInspectorPanel
-@onready var _resource_inspector_panel: PanelContainer = $CanvasLayer/ResourceInspectorPanel
-@onready var _bottom_toolbar: PanelContainer = $CanvasLayer/BottomToolbar
-@onready var _work_priority_table: PanelContainer = $CanvasLayer/WorkPriorityPanel
-@onready var _colonist_manager: ColonistManager = $ChunkManager/GameplayYSort/ColonistManager
-
-var _world_state
-var _tile_selections: Array[Dictionary] = []
-var _selected_tile_index: int = 0
-var _placement_mode: bool = false
-var _harvest_mode: bool = false
-var _stockpile_mode: bool = false
-var _debug_cliff_mode: bool = false
-var _selected_building_id: String = DEFAULT_BUILDING_ID
-var _placement_preview: Node2D
-var _placement_result: Dictionary = {}
-var _selected_colonist: Colonist
-var _selected_storage_id: String = ""
-var drag_start_cell: Vector2i = Vector2i.ZERO
-var drag_current_cell: Vector2i = Vector2i.ZERO
-var is_dragging_harvest_area: bool = false
-var is_dragging_stockpile_area: bool = false
-var _area_drag_start_screen_position: Vector2 = Vector2.ZERO
-var _area_drag_preview: Node2D
-var _area_drag_fill: Polygon2D
-var _area_drag_outline: Line2D
-var _last_harvest_designation_result: Dictionary = {}
-var _last_stockpile_zone_result: Dictionary = {}
-
+## Presentation coordinator only: builds windows and submits validated requests.
 func _ready() -> void:
-	_tile_selections = TerrainConfigRef.get_selectable_terrains()
-	_world_state = WorldStateScript.new()
-	_world_state.name = "WorldState"
-	add_child(_world_state)
-	_world_state.resource_total_changed.connect(_on_resource_total_changed)
-	_world_state.storage_capacity_changed.connect(_on_storage_capacity_changed)
-	_world_state.time_changed.connect(_on_time_changed)
-	_world_state.day_phase_changed.connect(_on_day_phase_changed)
-	_world_state.set_placement_query(_chunk_manager)
-	_chunk_manager.set_world_state(_world_state)
-	_chunk_manager.resource_inspection_requested.connect(_on_resource_inspection_requested)
-	_colonist_manager.set_world_state(_world_state)
-	_work_priority_table.setup(_colonist_manager)
-	_colonist_manager.population_replaced.connect(_on_colonist_population_replaced)
-	_bottom_toolbar.building_requested.connect(_on_building_requested)
-	_bottom_toolbar.harvest_mode_requested.connect(_on_harvest_mode_requested)
-	_bottom_toolbar.cancel_mode_requested.connect(_cancel_control_mode)
-	_create_area_drag_preview()
-	_placement_preview = ConstructionSiteVisualScript.new()
-	_placement_preview.name = "ConstructionPlacementPreview"
-	_placement_preview.z_index = 100
-	_placement_preview.visible = false
-	add_child(_placement_preview)
-	_update_resource_label()
-	_selected_tile_panel.setup(_chunk_manager.terrain_layer)
-	_update_selected_tile_ui()
-	_update_control_mode_ui()
+	desktop_shell.save_game_requested.connect(_save_game)
+	desktop_shell.load_game_requested.connect(_load_game)
+	desktop_shell.new_game_requested.connect(_new_game)
+	desktop_shell.exit_requested.connect(_request_exit)
+	desktop_shell.window_focus_requested.connect(_focus_window)
+	desktop_shell.window_minimise_requested.connect(_minimise_window)
+	colony_state.simulation_time_changed.connect(_on_simulation_time_changed)
+	desktop_shell.set_load_available(colony_state.has_valid_save())
+	_build_time_controls(); _refresh_simulation_clock(); colony_state.game_replaced.connect(_rebuild_gameplay); colony_state.state_changed.connect(_refresh); colony_state.discovery_completed.connect(_show_discovery_result); _show_main_menu()
 
-func _process(delta: float) -> void:
-	_world_state.advance_time(delta)
-	if _placement_mode:
-		_update_placement_preview()
-	if _debug_cliff_mode:
-		_update_debug_cliff_preview()
+func _show_main_menu() -> void:
+	desktop.visible = false
+	if _menu != null: _menu.queue_free()
+	_menu = CenterContainer.new(); _menu.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT); add_child(_menu)
+	var panel := PanelContainer.new(); panel.custom_minimum_size = Vector2(360, 250); _menu.add_child(panel)
+	var box := VBoxContainer.new(); box.add_theme_constant_override("separation", 10); panel.add_child(box)
+	var title := Label.new(); title.text = "ISO COLONY"; title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; title.add_theme_font_size_override("font_size", 28); box.add_child(title)
+	for entry: Array in [["New Game", _new_game], ["Load Game", _load_game], ["Quit", _request_exit]]:
+		var button := Button.new(); button.text = entry[0]; button.custom_minimum_size.y = 42; button.pressed.connect(entry[1]); box.add_child(button)
+		if entry[0] == "Load Game": button.disabled = not colony_state.has_valid_save()
+	_feedback = Label.new(); _feedback.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; _feedback.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; box.add_child(_feedback)
 
-func _input(event: InputEvent) -> void:
-	## Observe area drags before collision picking. Tiny Harvest releases remain unhandled for exact ResourceNode clicks.
-	if not _harvest_mode and not _stockpile_mode:
-		return
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed:
-			if get_viewport().gui_get_hovered_control() == null:
-				_resource_inspector_panel.clear_selection()
-				_begin_area_drag(event.position)
-		elif _is_dragging_area():
-			var exceeded_threshold: bool = event.position.distance_to(_area_drag_start_screen_position) >= AREA_DRAG_THRESHOLD_PIXELS
-			if exceeded_threshold or is_dragging_stockpile_area:
-				_finish_area_drag(event.position)
-				get_viewport().set_input_as_handled()
-			else:
-				_clear_area_drag()
-	elif event is InputEventMouseMotion and _is_dragging_area():
-		_update_area_drag(event.position)
+func _new_game() -> void:
+	var result := colony_state.request_new_game()
+	if not bool(result.ok) and is_instance_valid(_feedback): _feedback.text = "New Game failed: " + String(result.reason)
+func _load_game() -> void:
+	var result := colony_state.request_load_game()
+	if not bool(result.ok) and is_instance_valid(_feedback): _feedback.text = "Load failed: " + String(result.reason).replace("_", " ")
 
-func _on_resource_total_changed(_resource_type: String, _total: int) -> void:
-	_update_resource_label()
+func _save_game() -> void:
+	var result := colony_state.request_save_game()
+	if bool(result.ok): desktop_shell.set_load_available(true)
 
-func _on_storage_capacity_changed(_capacity: int, _stored: int) -> void:
-	_update_resource_label()
-	_refresh_selected_storage_inspector()
+func _request_exit() -> void:
+	get_tree().quit()
 
-func _on_time_changed(_day: int, _hour: int, _minute: int) -> void:
-	_update_resource_label()
+func _rebuild_gameplay() -> void:
+	if _menu != null: _menu.queue_free(); _menu = null
+	desktop.visible = true
+	desktop_shell.close_start_menu(); desktop_shell.clear_windows()
+	for window: Control in _windows: if is_instance_valid(window): window.queue_free()
+	_windows.clear(); _colonist_widgets.clear(); _location_widget.clear(); _location_widgets.clear(); _building_inspector_widgets.clear(); _construction_tool_buttons.clear(); _construction_feedback_labels.clear(); _production_summary_labels.clear(); _active_construction_tool = ""
+	desktop_shell.set_load_available(colony_state.has_valid_save())
+	var ids := colony_state.get_colonist_ids()
+	for i in ids.size(): _build_colonist_window(ids[i], Vector2(20 + i * 285, 20))
+	_open_location(StateScript.LOCATION_ID); _build_locations_window(); var overlay := TravelOverlayScript.new(); overlay.configure(colony_state, _location_widgets); window_layer.add_child(overlay); window_layer.move_child(overlay, 0); _refresh()
 
-func _on_day_phase_changed(_is_daytime: bool) -> void:
-	_update_resource_label()
+func _build_time_controls() -> void:
+	var time_buttons := desktop_shell.get_time_button_container()
+	var label := Label.new(); label.text = "Time:"; time_buttons.add_child(label)
+	for entry: Array in [["Pause", 0.0], ["1x", 1.0], ["2x", 2.0], ["4x", 4.0]]:
+		var button := Button.new(); button.text = entry[0]; button.pressed.connect(func() -> void: desktop_shell.close_start_menu(); colony_state.request_set_time_scale(float(entry[1]))); time_buttons.add_child(button)
 
-func _update_resource_label() -> void:
-	var phase_label: String = "Day" if _world_state.is_day() else "Night"
-	var selected_definition: Dictionary = BuildingDefinitionRef.get_definition(_selected_building_id)
-	var selected_name: String = String(selected_definition.get("display_name", _selected_building_id))
-	var action_text: String
-	if _placement_mode:
-		action_text = "Build %s: click to place; right-click/Esc cancels." % selected_name
-	elif _harvest_mode:
-		action_text = "Harvest: click or drag resources; right-click/Esc cancels."
-		if not _last_harvest_designation_result.is_empty():
-			var skipped: int = int(_last_harvest_designation_result.get("skipped_already_ordered", 0)) + int(_last_harvest_designation_result.get("skipped_invalid", 0)) + int(_last_harvest_designation_result.get("skipped_depleted", 0))
-			action_text += " Last area: %d designated, %d skipped." % [int(_last_harvest_designation_result.get("designated", 0)), skipped]
-	elif _stockpile_mode:
-		action_text = "Stockpile Zone: drag over valid tiles; right-click/Esc cancels."
-		if not _last_stockpile_zone_result.is_empty():
-			if bool(_last_stockpile_zone_result.get("ok", false)):
-				action_text += " Created stockpile zone: %d cells." % int(_last_stockpile_zone_result.get("cell_count", 0))
-			else:
-				action_text += " Zone rejected: %s." % String(_last_stockpile_zone_result.get("reason", "invalid"))
-	elif _debug_cliff_mode:
-		action_text = "Debug Cliff: left-click translucent, right-click solid; P/Esc exits."
-	else:
-		action_text = "Normal selection. Use the bottom toolbar or B/H shortcuts."
-	_resource_label.text = "Wood: %d\nStone: %d\nFood: %d\nStorage: %d / %d\nTime: %s (%s)\n%s" % [
-		_world_state.get_resource_total("wood"),
-		_world_state.get_resource_total("stone"),
-		_world_state.get_resource_total("food"),
-		_world_state.get_stored_resource_total(),
-		_world_state.get_storage_capacity(),
-		_world_state.get_time_label(),
-		phase_label,
-		action_text,
+func _on_simulation_time_changed(day: int, hour: int, minute: int) -> void:
+	desktop_shell.set_simulation_clock(day, hour, minute)
+	for location_id: String in _location_widgets:
+		_refresh_location_production(location_id)
+
+func _refresh_simulation_clock() -> void:
+	var clock := colony_state.get_simulation_clock()
+	_on_simulation_time_changed(int(clock.day), int(clock.hour), int(clock.minute))
+
+func _build_colonist_window(id: String, position_value: Vector2) -> void:
+	var c := colony_state.get_colonist_snapshot(id); var window := _create_window(String(c.display_name), position_value, Vector2(270, 390), false)
+	var box := VBoxContainer.new(); box.add_theme_constant_override("separation", 5); window.get_content_container().add_child(box)
+	var portrait := TextureRect.new(); portrait.texture = COLONIST_TEXTURE; portrait.custom_minimum_size = Vector2(64, 64); portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE; portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED; portrait.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST; box.add_child(portrait)
+	var facts := Label.new(); facts.text = "Plants %d   Mining %d   Construction %d\nTraits: %s" % [c.skills.Plants, c.skills.Mining, c.skills.get("Construction", 0), ", ".join(c.traits)]; facts.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; box.add_child(facts)
+	var status := Label.new(); status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; status.custom_minimum_size.y = 95; box.add_child(status)
+	var roles := GridContainer.new(); roles.columns = 2; box.add_child(roles)
+	for entry: Array in [["Woodcutting", StateScript.ROLE_WOOD], ["Mining", StateScript.ROLE_MINING], ["Foraging", StateScript.ROLE_FORAGE], ["Hauling", StateScript.ROLE_HAUL], ["Construction", StateScript.ROLE_CONSTRUCTION], ["Unassigned", StateScript.ROLE_NONE]]:
+		var button := Button.new(); button.text = entry[0]; button.pressed.connect(func() -> void: colony_state.request_set_colonist_role(id, String(entry[1]))); roles.add_child(button)
+	var scout := MenuButton.new(); scout.text = "Scout"
+	for entry: Array in [["Woodland", "woodland"], ["Rocky Area", "rocky"], ["Forage-Rich", "forage_rich"], ["General Area", "general"]]:
+		scout.get_popup().add_item(entry[0]); scout.get_popup().set_item_metadata(scout.get_popup().item_count - 1, entry[1])
+	scout.get_popup().id_pressed.connect(func(index: int) -> void: colony_state.request_start_scouting(id, String(scout.get_popup().get_item_metadata(index))))
+	roles.add_child(scout)
+	var go_to := Button.new(); go_to.text = "Go To..."; go_to.pressed.connect(func() -> void: _selected_colonist_id = id; _refresh()); roles.add_child(go_to)
+	var home := Button.new(); home.text = "Return Home"; home.pressed.connect(func() -> void: colony_state.request_return_colonist_home(id)); roles.add_child(home)
+	_colonist_widgets[id] = {"status": status, "roles": roles}
+
+func _open_location(location_id: String) -> void:
+	if _location_widgets.has(location_id): _focus_window(_location_widgets[location_id].window); return
+	var location := colony_state.get_location_snapshot(location_id); if location.is_empty(): return
+	var window := _create_window(String(location.display_name), Vector2(300 + _location_widgets.size() * 35, 360 + _location_widgets.size() * 25), Vector2(700, 520), location_id != StateScript.LOCATION_ID)
+	var box := VBoxContainer.new(); window.get_content_container().add_child(box)
+	var heading := Label.new(); heading.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; box.add_child(heading)
+	var settle := Button.new(); settle.text = "Settle Here"; settle.visible = location_id == StateScript.LOCATION_ID; settle.pressed.connect(func() -> void: colony_state.request_settle_starting_location()); box.add_child(settle)
+	var view: Control
+	var claim := Button.new(); claim.text = "Claim Location"; claim.pressed.connect(func() -> void: var l := colony_state.get_location_snapshot(location_id); if not l.colonist_presence_ids.is_empty(): colony_state.request_claim_location(String(l.colonist_presence_ids[0]), location_id)); box.add_child(claim)
+	var build := Button.new(); build.text = "Build Supply Cache"; build.pressed.connect(func() -> void: _set_active_construction_tool(""); view.begin_supply_cache_placement()); box.add_child(build)
+	var workspace := HBoxContainer.new(); workspace.add_theme_constant_override("separation", 6); workspace.size_flags_vertical = Control.SIZE_EXPAND_FILL; box.add_child(workspace)
+	var navigation := _build_location_navigation(location_id); workspace.add_child(navigation)
+	var inset := PanelContainer.new(); inset.theme_type_variation = "InsetPanel"; inset.size_flags_horizontal = Control.SIZE_EXPAND_FILL; inset.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	workspace.add_child(inset)
+	view = LocationViewScript.new(); view.configure(colony_state, location_id, Callable(self, "get_active_construction_tool")); view.size_flags_horizontal = Control.SIZE_EXPAND_FILL; view.size_flags_vertical = Control.SIZE_EXPAND_FILL; view.construction_feedback.connect(_on_construction_feedback.bind(location_id)); view.building_inspection_requested.connect(_open_building_inspector); inset.add_child(view)
+	_location_widgets[location_id] = {"heading": heading, "settle": settle, "claim": claim, "build": build, "view": view, "window": window, "navigation": navigation, "expanded_section": "", "section_buttons": navigation.get_meta("section_buttons"), "section_contents": navigation.get_meta("section_contents")}; if location_id == StateScript.LOCATION_ID: _location_widget = _location_widgets[location_id]
+	window.focus_requested.connect(func(_w: Control) -> void: if not _selected_colonist_id.is_empty(): colony_state.request_send_colonist_to_location(_selected_colonist_id, location_id); _selected_colonist_id = "")
+	_refresh()
+
+func _build_locations_window() -> void:
+	var window := _create_window("Known Locations", Vector2(880, 20), Vector2(500, 520), false); var scroll := ScrollContainer.new(); window.get_content_container().add_child(scroll); _locations_list = VBoxContainer.new(); _locations_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL; scroll.add_child(_locations_list)
+
+## Builds presentation-owned accordion navigation for one location window.
+## Section state is local to the window; tool actions keep using the existing
+## authoritative state and location-view request paths.
+func _build_location_navigation(location_id: String) -> VBoxContainer:
+	var navigation := VBoxContainer.new(); navigation.name = "LocationNavigation"; navigation.custom_minimum_size.x = 180; navigation.add_theme_constant_override("separation", 2)
+	var section_buttons: Dictionary = {}
+	var section_contents: Dictionary = {}
+	for section_name: String in ["Production", "Construction", "Buildings", "Colonists", "Storage"]:
+		var section_key := section_name.to_lower()
+		var section_button := Button.new(); section_button.name = "%sSectionButton" % section_name; section_button.text = "\u25b6 %s" % section_name; section_button.alignment = HORIZONTAL_ALIGNMENT_LEFT; section_button.pressed.connect(_set_location_section.bind(location_id, section_key)); navigation.add_child(section_button); section_buttons[section_key] = section_button
+		var margin := MarginContainer.new(); margin.name = "%sSectionContent" % section_name; margin.add_theme_constant_override("margin_left", 12); margin.visible = false; navigation.add_child(margin); section_contents[section_key] = margin
+		if section_key == "production": margin.add_child(_build_production_section(location_id))
+		elif section_key == "construction": margin.add_child(_build_construction_section(location_id))
+		else:
+			var placeholder := Label.new(); placeholder.text = "%s tools are not available yet." % section_name; placeholder.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; margin.add_child(placeholder)
+	navigation.set_meta("section_buttons", section_buttons); navigation.set_meta("section_contents", section_contents)
+	return navigation
+
+func _build_production_section(location_id: String) -> Label:
+	var label := Label.new()
+	label.name = "ProductionSummary"
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.custom_minimum_size.x = 160
+	_production_summary_labels[location_id] = label
+	return label
+
+func _refresh_location_production(location_id: String) -> void:
+	if not _production_summary_labels.has(location_id) or not _location_widgets.has(location_id): return
+	var widget: Dictionary = _location_widgets[location_id]
+	if widget.view.is_rendering_suspended(): return
+	var summary := colony_state.get_location_production_summary(location_id)
+	if summary.is_empty(): return
+	var lines: Array[String] = ["Last %ds — %s" % [int(summary.window_seconds), String(summary.status).replace("_", " ").capitalize()]]
+	for resource_type: String in ["wood", "stone", "food"]:
+		var resource: Dictionary = summary.production[resource_type]
+		lines.append("%s %.1f/min  S:%d L:%d C:%d" % [resource_type.capitalize(), float(resource.per_minute), int(resource.stored), int(resource.loose), int(resource.carried)])
+	var role_parts: Array[String] = []
+	for role: String in [StateScript.ROLE_WOOD, StateScript.ROLE_MINING, StateScript.ROLE_FORAGE, StateScript.ROLE_HAUL, StateScript.ROLE_CONSTRUCTION, StateScript.ROLE_NONE]:
+		var count := int(summary.roles.get(role, 0))
+		if count > 0: role_parts.append("%s %d" % [role.capitalize(), count])
+	lines.append("Workers: %s" % ("None" if role_parts.is_empty() else " · ".join(role_parts)))
+	(_production_summary_labels[location_id] as Label).text = "\n".join(lines)
+
+func _build_construction_section(location_id: String) -> VBoxContainer:
+	var box := VBoxContainer.new(); box.name = "ConstructionTools"; box.add_theme_constant_override("separation", 4)
+	var tool_buttons: Dictionary = {}
+	for entry: Array in [["Wall", "wall"], ["Floor", "floor"], ["Door", "door"], ["Window", "window"]]:
+		var piece_kind := String(entry[1]); var button := Button.new(); button.name = "%sToolButton" % String(entry[0]); button.text = entry[0]; button.toggle_mode = true; button.pressed.connect(_set_active_construction_tool.bind(piece_kind)); box.add_child(button); tool_buttons[piece_kind] = button
+	var roof := Button.new(); roof.name = "RoofToolButton"; roof.text = "Roof (Deferred)"; roof.disabled = true; roof.tooltip_text = "Roof construction is deferred"; box.add_child(roof)
+	var cancel := Button.new(); cancel.name = "CancelToolButton"; cancel.text = "Cancel Tool"; cancel.pressed.connect(_set_active_construction_tool.bind("")); box.add_child(cancel)
+	var feedback := Label.new(); feedback.name = "ConstructionFeedback"; feedback.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; box.add_child(feedback)
+	_construction_tool_buttons[location_id] = tool_buttons; _construction_feedback_labels[location_id] = feedback; _refresh_construction_tool_ui()
+	return box
+
+func _set_location_section(location_id: String, section_key: String) -> void:
+	if not _location_widgets.has(location_id): return
+	var widget: Dictionary = _location_widgets[location_id]
+	var expanded := "" if String(widget.expanded_section) == section_key else section_key
+	widget.expanded_section = expanded
+	for key: String in widget.section_buttons:
+		(widget.section_buttons[key] as Button).text = "%s %s" % ["\u25bc" if key == expanded else "\u25b6", key.capitalize()]
+		(widget.section_contents[key] as Control).visible = key == expanded
+
+func get_active_construction_tool() -> String:
+	return _active_construction_tool
+
+func _set_active_construction_tool(piece_kind: String) -> void:
+	_active_construction_tool = piece_kind
+	for widget: Dictionary in _location_widgets.values(): widget.view.cancel_construction_interaction()
+	_refresh_construction_tool_ui()
+
+func _refresh_construction_tool_ui() -> void:
+	for tool_buttons: Dictionary in _construction_tool_buttons.values():
+		for piece_kind: String in tool_buttons: (tool_buttons[piece_kind] as Button).button_pressed = piece_kind == _active_construction_tool
+
+func _on_construction_feedback(message: String, location_id: String) -> void:
+	if _construction_feedback_labels.has(location_id): (_construction_feedback_labels[location_id] as Label).text = message.capitalize()
+
+func _open_building_inspector(building_id: String) -> void:
+	if _building_inspector_widgets.has(building_id):
+		var existing: Control = _building_inspector_widgets[building_id].window
+		_focus_window(existing); return
+	var snapshot := colony_state.get_building_inspector_snapshot(building_id)
+	if snapshot.is_empty(): return
+	var window := _create_window(String(snapshot.display_name), Vector2(520, 180), Vector2(360, 360), true)
+	var label := Label.new(); label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; label.selectable = true
+	window.get_content_container().add_child(label)
+	_building_inspector_widgets[building_id] = {"window": window, "label": label}
+	_refresh_building_inspector(building_id)
+
+func _refresh_building_inspector(building_id: String) -> void:
+	if not _building_inspector_widgets.has(building_id): return
+	var snapshot := colony_state.get_building_inspector_snapshot(building_id)
+	if snapshot.is_empty(): return
+	var stored_lines: Array[String] = []
+	if bool(snapshot.tracking.stored_items_supported):
+		for item: Dictionary in snapshot.stored_items: stored_lines.append("%s: %d" % [String(item.resource_type).capitalize(), int(item.amount)])
+	var lines: Array[String] = [
+		"Type: %s" % String(snapshot.building_type).capitalize(),
+		"State: %s" % String(snapshot.completion_state).capitalize(),
+		"Footprint: %d cell(s)" % snapshot.occupied_cells.size(),
+		"Enclosed: %s" % ("Yes" if bool(snapshot.enclosed) else "No"),
+		"Interior area: %d cell(s)" % int(snapshot.interior_cell_count),
+		"Location: %s" % String(snapshot.world_space_id),
+		"",
+		"Occupants inside: Not tracked",
+		"Stored items: %s" % ("Not tracked" if not bool(snapshot.tracking.stored_items_supported) else ("None" if stored_lines.is_empty() else "\n  " + "\n  ".join(stored_lines))),
+		"Furniture inside: Not tracked",
+		"",
+		"Details",
+		"Building ID: %s" % String(snapshot.building_id),
 	]
+	(_building_inspector_widgets[building_id].label as Label).text = "\n".join(lines)
 
-func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo:
-		match event.keycode:
-			KEY_P:
-				_set_debug_cliff_mode(not _debug_cliff_mode)
-				get_viewport().set_input_as_handled()
-			KEY_B:
-				_set_placement_mode(not _placement_mode)
-				get_viewport().set_input_as_handled()
-			KEY_H:
-				_set_harvest_mode(not _harvest_mode)
-				get_viewport().set_input_as_handled()
-			KEY_C:
-				_attempt_progress_construction()
-				get_viewport().set_input_as_handled()
-			KEY_X:
-				_attempt_cancel_construction()
-				get_viewport().set_input_as_handled()
-			KEY_ESCAPE:
-				if _placement_mode or _harvest_mode or _stockpile_mode or _debug_cliff_mode:
-					_cancel_control_mode()
-					get_viewport().set_input_as_handled()
-			KEY_1:
-				if _placement_mode:
-					_select_building("campfire")
-				else:
-					_cycle_selected_tile(1)
-			KEY_2:
-				if _placement_mode:
-					_select_building("cabin")
-				else:
-					_cycle_selected_tile(-1)
-			KEY_3:
-				if _placement_mode:
-					_select_building("storehouse")
-	elif event is InputEventMouseButton and event.pressed and not event.is_echo():
-		if _debug_cliff_mode and event.button_index == MOUSE_BUTTON_LEFT:
-			_place_debug_cliff_marker(false)
-			get_viewport().set_input_as_handled()
-		elif _debug_cliff_mode and event.button_index == MOUSE_BUTTON_RIGHT:
-			_place_debug_cliff_marker(true)
-			get_viewport().set_input_as_handled()
-		elif _placement_mode and event.button_index == MOUSE_BUTTON_LEFT:
-			_attempt_place_construction()
-			get_viewport().set_input_as_handled()
-		elif _placement_mode and event.button_index == MOUSE_BUTTON_RIGHT:
-			_cancel_control_mode()
-			get_viewport().set_input_as_handled()
-		elif _harvest_mode and event.button_index == MOUSE_BUTTON_RIGHT:
-			_cancel_control_mode()
-			get_viewport().set_input_as_handled()
-		elif _stockpile_mode and event.button_index == MOUSE_BUTTON_RIGHT:
-			_cancel_control_mode()
-			get_viewport().set_input_as_handled()
-		elif _harvest_mode and event.button_index == MOUSE_BUTTON_LEFT:
-			# Keep harvest presses out of normal selection while leaving them available to ResourceNode picking.
-			pass
-		elif _stockpile_mode and event.button_index == MOUSE_BUTTON_LEFT:
-			# Main observes and commits the stockpile rectangle on release.
-			pass
-		elif event.button_index == MOUSE_BUTTON_RIGHT and _selected_colonist != null and is_instance_valid(_selected_colonist):
-			_request_selected_colonist_move(event.position)
-			get_viewport().set_input_as_handled()
-		elif event.button_index == MOUSE_BUTTON_LEFT:
-			_handle_world_selection()
+func _rebuild_locations_list() -> void:
+	if _locations_list == null: return
+	for child: Node in _locations_list.get_children(): child.queue_free()
+	for location: Dictionary in colony_state.get_location_snapshots():
+		var row := VBoxContainer.new(); var p: Dictionary = location.potentials; var home := colony_state.get_location_snapshot(StateScript.LOCATION_ID); var distance := Vector2(location.world_position).distance_to(Vector2(home.world_position)); var label := Label.new(); label.text = "%s | %s | %.1f from Home | Colonists %d | Buildings %d\nLoose W:%d S:%d F:%d | Stored W:%d S:%d F:%d" % [location.display_name, "Claimed Outpost" if bool(location.claimed) and not bool(location.primary_settlement) else location.lifecycle_state, distance, location.colonist_presence_ids.size(), location.building_records.size(), location.resource_totals.loose.wood, location.resource_totals.loose.stone, location.resource_totals.loose.food, location.formal_storage.wood, location.formal_storage.stone, location.formal_storage.food]; row.add_child(label)
+		var actions := HBoxContainer.new(); row.add_child(actions); var open := Button.new(); open.text = "Open / Focus"; open.pressed.connect(func() -> void: _open_location(String(location.location_id))); actions.add_child(open)
+		var rename := LineEdit.new(); rename.placeholder_text = "Rename"; rename.custom_minimum_size.x = 90; rename.text_submitted.connect(func(value: String) -> void: colony_state.request_rename_location(String(location.location_id), value)); actions.add_child(rename)
+		if String(location.lifecycle_state) == "DISCOVERED": var retain := Button.new(); retain.text = "Retain"; retain.pressed.connect(func() -> void: colony_state.request_retain_location(String(location.location_id))); actions.add_child(retain); var discard := Button.new(); discard.text = "Discard"; discard.pressed.connect(func() -> void: colony_state.request_discard_location(String(location.location_id))); actions.add_child(discard)
+		if String(location.lifecycle_state) == "RETAINED" and not bool(location.claimed): var claim := Button.new(); claim.text = "Claim"; claim.disabled = location.colonist_presence_ids.is_empty(); claim.pressed.connect(func() -> void: if not location.colonist_presence_ids.is_empty(): colony_state.request_claim_location(String(location.colonist_presence_ids[0]), String(location.location_id))); actions.add_child(claim)
+		var send := Button.new(); send.text = "Send Selected"; send.disabled = _selected_colonist_id.is_empty(); send.pressed.connect(func() -> void: colony_state.request_send_colonist_to_location(_selected_colonist_id, String(location.location_id))); actions.add_child(send); _locations_list.add_child(row); _locations_list.add_child(HSeparator.new())
 
-func _set_placement_mode(enabled: bool) -> void:
-	_placement_mode = enabled
-	if enabled:
-		_harvest_mode = false
-		_stockpile_mode = false
-		_exit_debug_cliff_mode()
-		_clear_area_drag()
-	_chunk_manager.set_harvest_designation_input_enabled(false)
-	_placement_preview.visible = enabled
-	if enabled:
-		_update_placement_preview()
-	_update_resource_label()
-	_update_control_mode_ui()
+func _show_discovery_result(location_id: String) -> void:
+	var location := colony_state.get_location_snapshot(location_id); var window := _create_window("Location Discovered", Vector2(430, 180), Vector2(390, 300), true); var box := VBoxContainer.new(); window.get_content_container().add_child(box); var p: Dictionary = location.potentials; var label := Label.new(); label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART; label.text = "%s\nType: %s\nWorld position: %s\nPotential — Wood %d, Stone %d, Food %d" % [location.display_name, location.location_type, location.world_position, p.wood, p.stone, p.food]; box.add_child(label); var inspect := Button.new(); inspect.text = "Inspect"; inspect.pressed.connect(func() -> void: _open_location(location_id)); box.add_child(inspect); var retain := Button.new(); retain.text = "Retain"; retain.pressed.connect(func() -> void: colony_state.request_retain_location(location_id)); box.add_child(retain); var discard := Button.new(); discard.text = "Discard"; discard.pressed.connect(func() -> void: colony_state.request_discard_location(location_id)); box.add_child(discard)
 
-func _set_harvest_mode(enabled: bool) -> void:
-	var entering_mode: bool = enabled and not _harvest_mode
-	_harvest_mode = enabled
-	_placement_mode = false
-	_stockpile_mode = false
-	_exit_debug_cliff_mode()
-	_placement_preview.visible = false
-	_clear_area_drag()
-	if entering_mode:
-		_last_harvest_designation_result.clear()
-	_chunk_manager.set_harvest_designation_input_enabled(enabled)
-	_update_resource_label()
-	_update_control_mode_ui()
+func _create_window(title: String, position_value: Vector2, size_value: Vector2, close_enabled: bool) -> Control:
+	var window: Control = DesktopWindowScript.new(); window.configure(title, close_enabled, true); window.position = _clamp_window_spawn(position_value, size_value); window.size = size_value; window_layer.add_child(window); _windows.append(window)
+	desktop_shell.register_window(window, title)
+	window.minimise_requested.connect(_minimise_window); window.maximise_requested.connect(_maximise_window); window.close_requested.connect(_close_window); window.focus_requested.connect(_focus_window)
+	_focus_window(window)
+	return window
 
-func _set_stockpile_mode(enabled: bool) -> void:
-	var entering_mode: bool = enabled and not _stockpile_mode
-	_stockpile_mode = enabled
-	_placement_mode = false
-	_harvest_mode = false
-	_exit_debug_cliff_mode()
-	_placement_preview.visible = false
-	_clear_area_drag()
-	if entering_mode:
-		_last_stockpile_zone_result.clear()
-	_chunk_manager.set_harvest_designation_input_enabled(false)
-	_update_resource_label()
-	_update_control_mode_ui()
+func _focus_window(window: Control) -> void:
+	if not is_instance_valid(window): return
+	desktop_shell.close_start_menu(); window.visible = true; _set_window_content_suspended(window, false); window.move_to_front()
+	for candidate: Control in _windows:
+		if is_instance_valid(candidate): candidate.set_focused(candidate == window)
+	desktop_shell.set_window_minimized(window, false)
 
-func _cancel_control_mode() -> void:
-	_placement_mode = false
-	_harvest_mode = false
-	_stockpile_mode = false
-	_exit_debug_cliff_mode()
-	_clear_area_drag()
-	_placement_preview.visible = false
-	_chunk_manager.set_harvest_designation_input_enabled(false)
-	_update_resource_label()
-	_update_control_mode_ui()
+func _minimise_window(window: Control) -> void:
+	if not is_instance_valid(window): return
+	desktop_shell.close_start_menu(); _set_window_content_suspended(window, true); window.visible = false; window.set_focused(false); desktop_shell.set_window_minimized(window, true)
 
-func _update_control_mode_ui() -> void:
-	if _placement_mode:
-		var definition: Dictionary = BuildingDefinitionRef.get_definition(_selected_building_id)
-		_bottom_toolbar.set_mode("Build: %s" % String(definition.get("display_name", _selected_building_id)), true)
-	elif _harvest_mode:
-		_bottom_toolbar.set_mode("Harvest Designation: click or drag", true)
-	elif _stockpile_mode:
-		_bottom_toolbar.set_mode("Stockpile Zone: drag tiles", true)
-	elif _debug_cliff_mode:
-		_bottom_toolbar.set_mode("Debug Cliff: inspect elevation", true)
-	else:
-		_bottom_toolbar.set_mode("Normal Selection", false)
+func _maximise_window(window: Control) -> void:
+	if not is_instance_valid(window): return
+	_focus_window(window)
+	window.set_maximised(not window.is_maximised(), Rect2(Vector2.ZERO, window_layer.size))
 
-func get_control_mode_name() -> String:
-	if _placement_mode:
-		return "build"
-	if _harvest_mode:
-		return "harvest"
-	if _stockpile_mode:
-		return "stockpile"
-	if _debug_cliff_mode:
-		return "debug_cliff"
-	return "normal"
+func _close_window(window: Control) -> void:
+	if not is_instance_valid(window): return
+	desktop_shell.close_start_menu()
+	_set_window_content_suspended(window, true)
+	_cleanup_window_lookups(window)
+	_windows.erase(window)
+	desktop_shell.unregister_window(window)
+	window.queue_free()
+	_focus_top_visible_window()
 
-func _set_debug_cliff_mode(enabled: bool) -> void:
-	if not enabled:
-		_exit_debug_cliff_mode()
-		_update_resource_label()
-		_update_control_mode_ui()
-		return
-	_placement_mode = false
-	_harvest_mode = false
-	_stockpile_mode = false
-	_clear_area_drag()
-	_placement_preview.visible = false
-	_chunk_manager.set_harvest_designation_input_enabled(false)
-	_debug_cliff_mode = true
-	_update_debug_cliff_preview()
-	_update_resource_label()
-	_update_control_mode_ui()
+func _set_window_content_suspended(window: Control, suspended: bool) -> void:
+	for widget: Dictionary in _location_widgets.values():
+		if widget.window == window:
+			widget.view.set_rendering_suspended(suspended)
+			if not suspended: _refresh_location_production(String(widget.view.location_id))
+			return
 
-func _exit_debug_cliff_mode() -> void:
-	_debug_cliff_mode = false
-	_chunk_manager.clear_debug_elevation_preview()
+func _cleanup_window_lookups(window: Control) -> void:
+	for location_id: String in _location_widgets.keys():
+		if _location_widgets[location_id].window == window:
+			if _location_widget == _location_widgets[location_id]: _location_widget = {}
+			_location_widgets.erase(location_id)
+			_construction_tool_buttons.erase(location_id)
+			_construction_feedback_labels.erase(location_id)
+			_production_summary_labels.erase(location_id)
+	for building_id: String in _building_inspector_widgets.keys():
+		if _building_inspector_widgets[building_id].window == window: _building_inspector_widgets.erase(building_id)
 
-func _update_debug_cliff_preview() -> void:
-	var target_cell: Vector2i = _chunk_manager.get_debug_elevation_cell_at_world_position(get_global_mouse_position())
-	_chunk_manager.set_debug_elevation_preview(target_cell, true)
+func _focus_top_visible_window() -> void:
+	for index in range(window_layer.get_child_count() - 1, -1, -1):
+		var candidate := window_layer.get_child(index)
+		if candidate in _windows and is_instance_valid(candidate) and candidate.visible:
+			_focus_window(candidate)
+			return
+	desktop_shell.set_active_window(null)
 
-func _place_debug_cliff_marker(solid: bool) -> void:
-	var target_cell: Vector2i = _chunk_manager.get_debug_elevation_cell_at_world_position(get_global_mouse_position())
-	if not _chunk_manager.place_debug_elevation_marker(target_cell, solid):
-		push_warning("Debug elevation marker requires a loaded cell.")
+func _clamp_window_spawn(requested_position: Vector2, window_size: Vector2) -> Vector2:
+	var working_size := window_layer.size
+	return Vector2(clampf(requested_position.x, 0.0, maxf(0.0, working_size.x - window_size.x)), clampf(requested_position.y, 0.0, maxf(0.0, working_size.y - window_size.y)))
 
-func get_selected_building_id() -> String:
-	return _selected_building_id
-
-func _on_building_requested(building_id: String) -> void:
-	_select_building(building_id)
-	_set_placement_mode(true)
-
-func _on_harvest_mode_requested() -> void:
-	_set_harvest_mode(true)
-
-func _create_area_drag_preview() -> void:
-	## Transient presentation only; the preview never stores or authorizes harvest orders.
-	_area_drag_preview = Node2D.new()
-	_area_drag_preview.name = "AreaDesignationPreview"
-	_area_drag_preview.z_index = 90
-	_area_drag_preview.visible = false
-	add_child(_area_drag_preview)
-	_area_drag_fill = Polygon2D.new()
-	_area_drag_preview.add_child(_area_drag_fill)
-	_area_drag_outline = Line2D.new()
-	_area_drag_outline.width = 2.0
-	_area_drag_outline.antialiased = true
-	_area_drag_preview.add_child(_area_drag_outline)
-
-func _begin_area_drag(screen_position: Vector2) -> void:
-	_area_drag_start_screen_position = screen_position
-	drag_start_cell = _chunk_manager.world_to_cell(_screen_to_world(screen_position))
-	drag_current_cell = drag_start_cell
-	is_dragging_harvest_area = _harvest_mode
-	is_dragging_stockpile_area = _stockpile_mode
-	if is_dragging_stockpile_area:
-		_area_drag_fill.color = Color(0.18, 0.62, 1.0, 0.18)
-		_area_drag_outline.default_color = Color(0.28, 0.76, 1.0, 0.95)
-	else:
-		_area_drag_fill.color = Color(1.0, 0.78, 0.12, 0.16)
-		_area_drag_outline.default_color = Color(1.0, 0.84, 0.22, 0.95)
-	_update_area_drag_preview()
-
-func _update_area_drag(screen_position: Vector2) -> void:
-	drag_current_cell = _chunk_manager.world_to_cell(_screen_to_world(screen_position))
-	_update_area_drag_preview()
-
-func _finish_area_drag(screen_position: Vector2) -> void:
-	_update_area_drag(screen_position)
-	var cell_rect: Rect2i = _get_area_drag_cell_rect()
-	var was_stockpile_drag: bool = is_dragging_stockpile_area
-	_clear_area_drag()
-	if was_stockpile_drag:
-		_last_stockpile_zone_result = _create_stockpile_zone_from_rect(cell_rect)
-	else:
-		_last_harvest_designation_result = _designate_harvest_resources_in_rect(cell_rect)
-	_update_resource_label()
-
-func _clear_area_drag() -> void:
-	is_dragging_harvest_area = false
-	is_dragging_stockpile_area = false
-	if _area_drag_preview != null:
-		_area_drag_preview.visible = false
-
-func _is_dragging_area() -> bool:
-	return is_dragging_harvest_area or is_dragging_stockpile_area
-
-func _get_area_drag_cell_rect() -> Rect2i:
-	var minimum := Vector2i(mini(drag_start_cell.x, drag_current_cell.x), mini(drag_start_cell.y, drag_current_cell.y))
-	var maximum := Vector2i(maxi(drag_start_cell.x, drag_current_cell.x), maxi(drag_start_cell.y, drag_current_cell.y))
-	return Rect2i(minimum, maximum - minimum + Vector2i.ONE)
-
-func _update_area_drag_preview() -> void:
-	if _area_drag_preview == null or not _is_dragging_area():
-		return
-	var cell_rect: Rect2i = _get_area_drag_cell_rect()
-	var origin: Vector2 = _chunk_manager.get_cell_world_position(cell_rect.position)
-	var x_step: Vector2 = _chunk_manager.get_cell_world_position(cell_rect.position + Vector2i.RIGHT) - origin
-	var y_step: Vector2 = _chunk_manager.get_cell_world_position(cell_rect.position + Vector2i.DOWN) - origin
-	var first: Vector2 = to_local(origin - x_step * 0.5 - y_step * 0.5)
-	var second: Vector2 = first + x_step * float(cell_rect.size.x)
-	var fourth: Vector2 = first + y_step * float(cell_rect.size.y)
-	var third: Vector2 = second + y_step * float(cell_rect.size.y)
-	var corners := PackedVector2Array([first, second, third, fourth])
-	_area_drag_fill.polygon = corners
-	_area_drag_outline.points = PackedVector2Array([first, second, third, fourth, first])
-	_area_drag_preview.visible = true
-
-func _create_stockpile_zone_from_rect(cell_rect: Rect2i) -> Dictionary:
-	var cells: Array[Vector2i] = []
-	for y in range(cell_rect.position.y, cell_rect.end.y):
-		for x in range(cell_rect.position.x, cell_rect.end.x):
-			cells.append(Vector2i(x, y))
-	return _world_state.request_create_stockpile_zone(cells)
-
-func _designate_harvest_resources_in_rect(cell_rect: Rect2i) -> Dictionary:
-	## Query presentation-owned loaded resources, but submit every mutation through WorldState.
-	var result_counts := {
-		"queried": 0,
-		"designated": 0,
-		"skipped_already_ordered": 0,
-		"skipped_invalid": 0,
-		"skipped_depleted": 0,
-	}
-	for resource: Dictionary in _chunk_manager.get_loaded_resources_in_cell_rect(cell_rect):
-		result_counts["queried"] += 1
-		var result: Dictionary = _world_state.request_designate_harvest(String(resource.get("resource_id", "")))
-		if bool(result.get("ok", false)):
-			result_counts["designated"] += 1
-			continue
-		match String(result.get("reason", "")):
-			"already_designated":
-				result_counts["skipped_already_ordered"] += 1
-			"resource_depleted":
-				result_counts["skipped_depleted"] += 1
-			_:
-				result_counts["skipped_invalid"] += 1
-	return result_counts
-
-func get_last_harvest_designation_result() -> Dictionary:
-	return _last_harvest_designation_result.duplicate(true)
-
-func _screen_to_world(screen_position: Vector2) -> Vector2:
-	return get_canvas_transform().affine_inverse() * screen_position
-
-func _update_placement_preview() -> void:
-	var target_cell: Vector2i = _chunk_manager.world_to_cell(get_global_mouse_position())
-	var definition: Dictionary = BuildingDefinitionRef.get_definition(_selected_building_id)
-	var visual_metadata: Dictionary = BuildingDefinitionRef.get_visual_metadata(_selected_building_id)
-	_placement_result = _world_state.validate_construction_placement(_selected_building_id, target_cell)
-	_placement_preview.global_position = _chunk_manager.get_cell_world_position(target_cell) + Vector2(0, -4)
-	_placement_preview.configure_preview(
-		bool(_placement_result.get("ok", false)),
-		_selected_building_id,
-		definition.get("footprint", Vector2i.ONE),
-		String(visual_metadata.get("construction_visual_id", "generic_scaffold")),
-		visual_metadata.get("placeholder_palette", {})
-	)
-
-func _attempt_place_construction() -> void:
-	var target_cell: Vector2i = _chunk_manager.world_to_cell(get_global_mouse_position())
-	var result: Dictionary = _request_place_selected_building_at_cell(target_cell)
-	if not bool(result.get("ok", false)):
-		push_warning("%s placement failed: %s" % [BuildingDefinitionRef.get_definition(_selected_building_id).get("display_name", _selected_building_id), String(result.get("reason", "unknown"))])
-	_update_placement_preview()
-
-func _request_place_selected_building_at_cell(target_cell: Vector2i) -> Dictionary:
-	## Main routes transient placement intent; WorldState remains the sole mutation authority.
-	return _world_state.request_place_construction(_selected_building_id, target_cell)
-
-func _select_building(building_id: String) -> void:
-	if not BuildingDefinitionRef.has_definition(building_id):
-		push_warning("Cannot select unknown building '%s'." % building_id)
-		return
-	_selected_building_id = building_id
-	if _placement_mode:
-		_update_placement_preview()
-	_update_resource_label()
-	_update_control_mode_ui()
-
-func _attempt_progress_construction() -> void:
-	var target_cell: Vector2i = _chunk_manager.world_to_cell(get_global_mouse_position())
-	var site: Dictionary = _world_state.get_construction_site_at_cell(target_cell)
-	if site.is_empty():
-		push_warning("No construction site exists under the cursor.")
-		return
-	var remaining_progress: float = maxf(float(site.get("build_time", 0.0)) - float(site.get("build_progress", 0.0)), 1.0)
-	var result: Dictionary = _world_state.request_progress_construction(String(site.get("site_id", "")), remaining_progress)
-	if not bool(result.get("ok", false)):
-		push_warning("Construction progress failed: %s" % String(result.get("reason", "unknown")))
-
-func _attempt_cancel_construction() -> void:
-	var target_cell: Vector2i = _chunk_manager.world_to_cell(get_global_mouse_position())
-	var site: Dictionary = _world_state.get_construction_site_at_cell(target_cell)
-	if site.is_empty():
-		push_warning("No construction site exists under the cursor.")
-		return
-	var result: Dictionary = _world_state.request_cancel_construction(String(site.get("site_id", "")))
-	if not bool(result.get("ok", false)):
-		push_warning("Construction cancellation failed: %s" % String(result.get("reason", "unknown")))
-	if _placement_mode:
-		_update_placement_preview()
-
-func _cycle_selected_tile(direction: int) -> void:
-	_selected_tile_index = wrapi(_selected_tile_index + direction, 0, _tile_selections.size())
-	_update_selected_tile_ui()
-
-func _update_selected_tile_ui() -> void:
-	var entry: Dictionary = _tile_selections[_selected_tile_index]
-	_selected_tile_panel.set_selected_tile(entry)
-
-func _attempt_place_selected_tile() -> void:
-	var entry: Dictionary = _tile_selections[_selected_tile_index]
-	# BLANK is intentionally a no-op to avoid erasing the ground layer without a wider override/persistence design.
-	if String(entry.get("id", "")).is_empty():
-		return
-	var target_cell: Vector2i = _chunk_manager.world_to_cell(get_global_mouse_position())
-	var result: Dictionary = _chunk_manager.request_place_manual_tile(target_cell, String(entry.get("id", "")))
-	if not bool(result.get("ok", false)):
-		push_warning("Manual tile placement failed: %s" % String(result.get("reason", "unknown")))
-
-func _handle_world_selection() -> void:
-	# ResourceNode picking occurs on the matching release. Clearing here makes
-	# empty-terrain clicks dismiss the panel without competing for that release.
-	_resource_inspector_panel.clear_selection()
-	var clicked_colonist: Colonist = _colonist_manager.get_colonist_at_world_position(get_global_mouse_position())
-	if clicked_colonist != null:
-		_set_selected_colonist(clicked_colonist)
-		return
-	_set_selected_colonist(null)
-	var selected_cell: Vector2i = _chunk_manager.world_to_cell(get_global_mouse_position())
-	if _select_storage_at_cell(selected_cell):
-		return
-	_attempt_place_selected_tile()
-
-
-func _on_resource_inspection_requested(inspection_data: Dictionary) -> void:
-	_resource_inspector_panel.display_resource(inspection_data)
-
-func _request_selected_colonist_move(screen_position: Vector2) -> Dictionary:
-	## Main translates presentation input; the selected Colonist owns validation and transient command state.
-	if _selected_colonist == null or not is_instance_valid(_selected_colonist):
-		return {"ok": false, "reason": "no_selected_colonist"}
-	var destination_cell: Vector2i = _chunk_manager.world_to_cell(_screen_to_world(screen_position))
-	return _selected_colonist.request_manual_move(destination_cell)
-
-func _set_selected_colonist(colonist: Colonist) -> void:
-	if _selected_colonist != null and is_instance_valid(_selected_colonist):
-		_selected_colonist.set_selected(false)
-	_selected_colonist = colonist
-	if _selected_colonist == null or not is_instance_valid(_selected_colonist):
-		_colonist_info_panel.clear_selection()
-		return
-	_clear_selected_storage()
-	_selected_colonist.set_selected(true)
-	_colonist_info_panel.display_colonist(_selected_colonist)
-
-func _select_storage_at_cell(cell: Vector2i) -> bool:
-	## Selection is transient; storage data remains owned and queried from WorldState.
-	var site: Dictionary = _world_state.get_construction_site_at_cell(cell)
-	if site.is_empty() or not bool(site.get("completed", false)):
-		_clear_selected_storage()
-		return false
-	var site_id: String = String(site.get("site_id", ""))
-	for component: Dictionary in _world_state.get_storage_components():
-		if String(component.get("construction_site_id", "")) != site_id:
-			continue
-		_selected_storage_id = String(component.get("storage_id", ""))
-		_refresh_selected_storage_inspector()
-		return true
-	_clear_selected_storage()
-	return false
-
-func _clear_selected_storage() -> void:
-	_selected_storage_id = ""
-	_storage_inspector_panel.clear_selection()
-
-func _refresh_selected_storage_inspector() -> void:
-	if _selected_storage_id.is_empty():
-		return
-	var component: Dictionary = _world_state.get_storage_component(_selected_storage_id)
-	if component.is_empty():
-		_clear_selected_storage()
-		return
-	var definition: Dictionary = BuildingDefinitionRef.get_definition(String(component.get("building_id", "")))
-	var building_name: String = String(definition.get("display_name", component.get("building_id", "Storage")))
-	_storage_inspector_panel.display_storage(building_name, component)
-
-func _on_colonist_population_replaced() -> void:
-	## Saved UI selection is intentionally excluded; imported populations begin unselected.
-	_set_selected_colonist(null)
-	_clear_selected_storage()
+func _refresh() -> void:
+	if _location_widget.is_empty(): return
+	_rebuild_locations_list()
+	var settled := colony_state.get_game_phase() == StateScript.SETTLED; _location_widget.settle.visible = not settled
+	for location_id: String in _location_widgets:
+		var widget: Dictionary = _location_widgets[location_id]; var l := colony_state.get_location_snapshot(location_id); var claimed := bool(l.get("claimed", false)); widget.claim.visible = location_id != StateScript.LOCATION_ID and not claimed; widget.claim.disabled = String(l.lifecycle_state) != "RETAINED" or l.colonist_presence_ids.is_empty(); widget.build.visible = location_id != StateScript.LOCATION_ID and claimed
+		if location_id != StateScript.LOCATION_ID: widget.heading.text = "%s | Status: %s\nLoose W:%d S:%d F:%d | Formal W:%d S:%d F:%d | Buildings %d" % [l.display_name, "Claimed Outpost" if claimed else String(l.lifecycle_state).capitalize(), l.resource_totals.loose.wood, l.resource_totals.loose.stone, l.resource_totals.loose.food, l.formal_storage.wood, l.formal_storage.stone, l.formal_storage.food, l.building_records.size()]
+		_refresh_location_production(location_id)
+	var summary := colony_state.get_resource_summary(); var location := colony_state.get_location_snapshot(StateScript.LOCATION_ID)
+	_location_widget.heading.text = "%s | %s | Seed %d\nStored W:%d S:%d F:%d   Loose W:%d S:%d F:%d   Carried W:%d S:%d F:%d" % [location.display_name, "Settled" if settled else "Evaluating", colony_state.get_game_seed(), summary.stored.wood, summary.stored.stone, summary.stored.food, summary.loose.wood, summary.loose.stone, summary.loose.food, summary.carried.wood, summary.carried.stone, summary.carried.food]
+	for id: String in colony_state.get_colonist_ids():
+		var c := colony_state.get_colonist_snapshot(id); var widget: Dictionary = _colonist_widgets[id]; var mobility := ""
+		var travel := colony_state.get_travel_snapshot(id); var scouting := colony_state.get_scouting_snapshot(id)
+		if not travel.is_empty(): mobility = "\n%s → %s  %d%%" % [travel.origin_location_id, travel.destination_location_id, int(100.0 * float(travel.travel_elapsed) / float(travel.travel_duration))]
+		elif not scouting.is_empty(): mobility = "\nScouting %s  %d%%" % [scouting.search_type, int(100.0 * float(scouting.elapsed) / float(scouting.duration))]
+		var current_name := "Away" if String(c.location_id).is_empty() else String(colony_state.get_location_snapshot(String(c.location_id)).display_name)
+		widget.status.text = "Location: %s\nRole: %s\nActivity: %s%s\nHunger: %d   Rest: %d%s" % [current_name, String(c.role).capitalize(), c.activity, mobility, int(c.needs.hunger), int(c.needs.rest), "\nWarning: low needs" if float(c.needs.hunger) < 30.0 or float(c.needs.rest) < 30.0 else ""]
+		for child: Control in widget.roles.get_children(): child.disabled = not settled
+	for building_id: String in _building_inspector_widgets: _refresh_building_inspector(building_id)

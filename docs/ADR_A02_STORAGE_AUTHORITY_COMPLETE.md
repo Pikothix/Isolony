@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Accepted historical decision — superseded as the active storage baseline
+
+> Dormant legacy context: this ADR describes `WorldState`/`ResourceStockpile` storage in the streamed-world prototype. Active bounded-location resources, piles, storage, and Food eligibility are owned by `LocationRegistry` and the active Supply Cache coordinator.
 
 ## Date
 

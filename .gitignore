@@ -1,19 +1,27 @@
-# Godot
-.import/
+# Godot generated files
 .godot/
+.import/
 
-# Mono
+# Exported builds
+builds/
+exports/
+
+# Mono / C#
 .mono/
-data_*/
 
-# Build exports
-export.cfg
-export_presets.cfg
-
-# OS
+# Editor and OS files
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
 
-# IDE
-.vscode/
-.idea/
+# Temporary project files
+.codex_tmp/
+.codex_*_debug.png
+.codex_*_debug.png.import
+
+# Logs and backups
+*.log
+*.tmp
+*.bak
+*~

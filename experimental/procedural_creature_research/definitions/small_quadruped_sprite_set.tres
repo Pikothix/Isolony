@@ -1,0 +1,40 @@
+[gd_resource type="Resource" script_class="ModularCreatureSpriteSet" load_steps=30 format=3]
+
+[ext_resource type="Script" path="res://experimental/procedural_creature_research/modular_creature_sprite_set.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/body.png" id="2_nb"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/head.png" id="3_nh"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/front_upper_leg.png" id="4_nfu"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/front_lower_leg.png" id="5_nfl"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/rear_upper_leg.png" id="6_nru"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/rear_lower_leg.png" id="7_nrl"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/foot.png" id="8_nf"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/ear_round.png" id="9_ner"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/ear_pointed.png" id="10_nep"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/ear_long.png" id="11_nel"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/tail_base.png" id="12_ntb"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/tail_mid.png" id="13_ntm"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/tail_tip.png" id="14_ntt"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/north_oblique/shadow.png" id="15_ns"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/body.png" id="16_sb"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/head.png" id="17_sh"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/front_upper_leg.png" id="18_sfu"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/front_lower_leg.png" id="19_sfl"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/rear_upper_leg.png" id="20_sru"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/rear_lower_leg.png" id="21_srl"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/foot.png" id="22_sf"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/ear_round.png" id="23_ser"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/ear_pointed.png" id="24_sep"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/ear_long.png" id="25_sel"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/tail_base.png" id="26_stb"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/tail_mid.png" id="27_stm"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/tail_tip.png" id="28_stt"]
+[ext_resource type="Texture2D" path="res://experimental/procedural_creature_research/assets/modular_quadruped/south_oblique/shadow.png" id="29_ss"]
+
+[resource]
+script = ExtResource("1_script")
+set_id = &"small_quadruped_modular"
+north_oblique_parts = {"body": ExtResource("2_nb"), "head": ExtResource("3_nh"), "front_upper_leg": ExtResource("4_nfu"), "front_lower_leg": ExtResource("5_nfl"), "rear_upper_leg": ExtResource("6_nru"), "rear_lower_leg": ExtResource("7_nrl"), "foot": ExtResource("8_nf"), "ear_round": ExtResource("9_ner"), "ear_pointed": ExtResource("10_nep"), "ear_long": ExtResource("11_nel"), "tail_base": ExtResource("12_ntb"), "tail_mid": ExtResource("13_ntm"), "tail_tip": ExtResource("14_ntt"), "shadow": ExtResource("15_ns")}
+south_oblique_parts = {"body": ExtResource("16_sb"), "head": ExtResource("17_sh"), "front_upper_leg": ExtResource("18_sfu"), "front_lower_leg": ExtResource("19_sfl"), "rear_upper_leg": ExtResource("20_sru"), "rear_lower_leg": ExtResource("21_srl"), "foot": ExtResource("22_sf"), "ear_round": ExtResource("23_ser"), "ear_pointed": ExtResource("24_sep"), "ear_long": ExtResource("25_sel"), "tail_base": ExtResource("26_stb"), "tail_mid": ExtResource("27_stm"), "tail_tip": ExtResource("28_stt"), "shadow": ExtResource("29_ss")}
+part_pivots = {"body": Vector2(0.5, 0.5), "head": Vector2(0.5, 0.5), "front_upper_leg": Vector2(0.5, 0.0), "front_lower_leg": Vector2(0.5, 0.0), "rear_upper_leg": Vector2(0.5, 0.0), "rear_lower_leg": Vector2(0.5, 0.0), "foot": Vector2(0.15, 0.5), "ear_round": Vector2(0.5, 1.0), "ear_pointed": Vector2(0.5, 1.0), "ear_long": Vector2(0.5, 1.0), "tail_base": Vector2(0.0, 0.5), "tail_mid": Vector2(0.0, 0.5), "tail_tip": Vector2(0.0, 0.5), "shadow": Vector2(0.5, 0.5)}
+default_part_scales = {"body": Vector2(1, 1), "head": Vector2(1, 1), "foot": Vector2(1, 1)}
+part_depth_biases = {"shadow": -20, "far_rear": -12, "far_front": -11, "tail_back": -8, "body": 0, "near_rear": 8, "near_front": 9, "head": 12, "ears": 14, "tail_front": 15}

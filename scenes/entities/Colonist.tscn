@@ -29,6 +29,7 @@ scale = Vector2(0.53796166, 0.57169694)
 texture = SubResource("AtlasTexture_ga6jj")
 
 [node name="NeedsLabel" type="Label" parent="."]
+visible = false
 z_index = 20
 offset_left = -40.0
 offset_top = -35.0

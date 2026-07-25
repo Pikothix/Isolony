@@ -3,6 +3,10 @@ class_name TerrainConfig
 
 const TILE_SOURCE_ID := 2
 const INVALID_ATLAS_COORDS := Vector2i(-1, -1)
+const VISUAL_VARIANT_FLAT := "flat"
+const VISUAL_VARIANT_EDGE_NORTH := "edge_north"
+const VISUAL_VARIANT_EDGE_WEST := "edge_west"
+const VISUAL_VARIANT_CORNER_NORTH_WEST := "corner_north_west"
 
 const TERRAIN_DEFS := {
 	"DIRT": {"tiles": [Vector2i(0, 0), Vector2i(0, 1)], "walkable": true},
@@ -84,6 +88,18 @@ static func get_atlas_coords(terrain_name: String) -> Vector2i:
 	if tiles.is_empty():
 		return INVALID_ATLAS_COORDS
 	return tiles[0]
+
+static func get_visual_atlas_coords(terrain_name: String, variant_key: String, flat_atlas_coords: Vector2i = INVALID_ATLAS_COORDS) -> Vector2i:
+	## Presentation-only variant lookup. Missing terrain-specific edge art
+	## intentionally falls back to the generated flat tile.
+	var fallback_atlas_coords: Vector2i = flat_atlas_coords
+	if fallback_atlas_coords == INVALID_ATLAS_COORDS:
+		fallback_atlas_coords = get_atlas_coords(terrain_name)
+	if variant_key.is_empty() or variant_key == VISUAL_VARIANT_FLAT:
+		return fallback_atlas_coords
+	var terrain_def: Dictionary = get_terrain_def(terrain_name)
+	var visual_variants: Dictionary = terrain_def.get("visual_variants", {})
+	return visual_variants.get(variant_key, fallback_atlas_coords)
 
 static func is_walkable(terrain_name: String) -> bool:
 	var terrain_def: Dictionary = get_terrain_def(terrain_name)

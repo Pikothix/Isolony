@@ -10,10 +10,14 @@ config_version=5
 
 [application]
 
-config/name="Iso Colony"
-run/main_scene="res://scenes/Main.tscn"
+config/name="Iso Colony (Copy)"
+run/main_scene="res://scenes/Genesis.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
+
+[genesis]
+
+debug_skip=false
 
 [input]
 

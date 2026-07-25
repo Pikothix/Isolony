@@ -1,6 +1,10 @@
 extends Node2D
 class_name ChunkManager
 
+## Purpose: Stream and render the one transiently active WorldSpace around the camera.
+## Responsibility: Own loaded presentation projections and local terrain queries, while generators and WorldState retain their respective authority.
+## Assumption: Only one WorldSpace is rendered at a time; non-surface terrain is reconstructed from simulation-owned interior records.
+
 const ProcSpriteCache = preload("res://scripts/procgen/proc_sprite_cache.gd")
 const PropPrewarmConfig = preload("res://scripts/world/props/prop_prewarm_config.gd")
 const PropVisualConfig = preload("res://scripts/world/props/prop_visual_config.gd")
@@ -10,10 +14,15 @@ const ConstructionSiteVisualScript = preload("res://scripts/buildings/constructi
 const StockpileZoneVisualScript = preload("res://scripts/world/stockpile_zone_visual.gd")
 const GroundItemVisualScript = preload("res://scripts/world/ground_item_visual.gd")
 const ElevationStackVisualScript = preload("res://scripts/world/elevation_cliff_visual.gd")
-const CliffEdgeRimVisualScript = preload("res://scripts/world/cliff_edge_rim_visual.gd")
+const ElevationEdgeVariantResolverRef = preload("res://scripts/world/elevation_edge_variant_resolver.gd")
+const ChunkBoundaryMeshRendererScript = preload("res://scripts/world/chunk_boundary_mesh_renderer.gd")
 const ShaderCliffRimOverlayScript = preload("res://scripts/world/shader_cliff_rim_overlay.gd")
 const CellRenderInfoRef = preload("res://scripts/world/cell_render_info.gd")
 const BuildingDefinitionRef = preload("res://scripts/buildings/building_definition.gd")
+const InteriorTerrainSourceRef = preload("res://scripts/interiors/interior_terrain_source.gd")
+const ConnectionMarkerVisualScript = preload("res://scripts/world/connection_marker_visual.gd")
+const InteriorWallVisualScript = preload("res://scripts/world/interior_wall_visual.gd")
+const LightingOverlayScript = preload("res://scripts/world/lighting_overlay.gd")
 
 const SURFACE_WORLD_SPACE_ID := "surface"
 const DEBUG_ELEVATION_PICK_RADIUS := 2
@@ -30,10 +39,15 @@ const CLIFF_RIM_NEIGHBOURS := {
 	"south": Vector2i.DOWN,
 	"west": Vector2i.LEFT,
 }
+const CLIFF_RIM_VISIBLE_DIRECTIONS := {
+	"east": true,
+	"south": true,
+}
 
 signal chunk_generated(chunk_coord: Vector2i)
 signal chunk_unloaded(chunk_coord: Vector2i)
 signal resource_inspection_requested(inspection_data: Dictionary)
+signal active_world_space_changed(world_space_id: String)
 
 @export_range(1, 6, 1) var load_radius: int = 2
 @export_range(1, 6, 1) var chunks_per_frame: int = 1
@@ -52,18 +66,26 @@ signal resource_inspection_requested(inspection_data: Dictionary)
 @export_range(8, 48, 1) var procedural_rock_large_size: int = 22
 @export var prewarm_procedural_variants: bool = true
 @export var stage_resource_spawning: bool = true
-@export_range(1, 128, 1) var resource_spawns_per_frame: int = 10
+@export_range(1, 128, 1) var resource_spawns_per_frame: int = 4
 ## Soft frame budget for staged resource construction. One resource is always
 ## allowed through so an individually expensive scene cannot starve the queue.
-@export_range(0.1, 16.0, 0.1) var resource_spawn_time_budget_ms: float = 3.0
+@export_range(0.1, 16.0, 0.1) var resource_spawn_time_budget_ms: float = 1.5
 @export var procedural_cache_debug: bool = false
 @export var chunk_profile_debug: bool = false
+@export_range(1, 256, 1) var chunk_profile_summary_interval: int = 16
 @export var streaming_lifecycle_profile_debug: bool = false
+@export var lighting_profile_debug: bool = false
+@export_range(0.5, 10.0, 0.5) var lighting_profile_summary_interval: float = 1.0
+@export var draw_per_cell_light_debug: bool = false
+@export var draw_light_source_glows_experimental: bool = false
+@export var draw_building_effect_radii_debug: bool = false
+@export var show_ground_item_amount_labels_debug: bool = false
 @export var cliff_rim_color: Color = Color(0.12, 0.09, 0.05, 1.0)
 @export_range(0.0, 1.0, 0.05) var cliff_rim_alpha: float = 0.65
 @export_range(0.25, 4.0, 0.25) var cliff_rim_width: float = 1.0
 @export_range(-4.0, 4.0, 0.25) var cliff_rim_vertical_offset: float = -0.5
-@export var shader_cliff_rims_enabled: bool = true
+@export var enable_cliff_face_overlay: bool = false
+@export var shader_cliff_rims_enabled: bool = false
 @export_enum("All", "Top Only", "Bottom Only", "None") var shader_cliff_rim_direction_mode: int = ShaderRimDirectionMode.ALL
 @export_range(128, 512, 64) var shader_cliff_rim_texture_size: int = 256
 @export_range(0.0, 3.0, 0.1) var shader_cliff_rim_softness: float = 0.75
@@ -73,10 +95,12 @@ signal resource_inspection_requested(inspection_data: Dictionary)
 @onready var terrain_visual_root: Node2D = $TerrainVisualRoot
 @onready var debug_elevation_root: Node2D = $DebugElevationRoot
 @onready var debug_elevation_level_label: Label = $DebugElevationRoot/ElevationLevelLabel
+@onready var gameplay_y_sort_root: Node2D = $GameplayYSort
 @onready var stockpile_zone_root: Node2D = $GameplayYSort/StockpileZoneRoot
 @onready var ground_item_root: Node2D = $GameplayYSort/GroundItemRoot
 @onready var resource_root: Node2D = $GameplayYSort/ResourceRoot
 @onready var construction_root: Node2D = $GameplayYSort/ConstructionRoot
+@onready var _colonist_manager: ColonistManager = $GameplayYSort/ColonistManager
 
 var _world_generator: WorldGenerator
 var _camera: Camera2D
@@ -92,11 +116,28 @@ var _wander_rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _world_state: Node
 var _harvest_designation_input_enabled: bool = false
 var _elevation_visual: Node2D
-var _cliff_edge_rim_visual: Node2D
+var _chunk_boundary_mesh_root: Node2D
+var _chunk_boundary_mesh_renderers: Dictionary = {}
 var _shader_cliff_rim_visual: Node2D
 var _debug_elevation_preview: Node2D
 var _debug_elevation_preview_cell: Vector2i = Vector2i(999999, 999999)
 var _debug_elevation_markers_by_chunk: Dictionary = {}
+var _active_world_space_id: String = SURFACE_WORLD_SPACE_ID
+var _connection_root: Node2D
+var _connection_markers: Array[Node2D] = []
+var _interior_wall_visual: Node2D
+var _lighting_overlay: Node2D
+var _chunk_profile_load_stats: Dictionary = {}
+var _chunk_profile_resource_stats: Dictionary = {}
+var _lighting_refresh_queued := false
+var _lighting_signal_count := 0
+var _day_phase_signal_count := 0
+var _lighting_profile_elapsed := 0.0
+var _applied_draw_per_cell_light_debug := false
+var _applied_draw_light_source_glows_experimental := false
+var _applied_draw_building_effect_radii_debug := false
+var _applied_show_ground_item_amount_labels_debug := false
+var _applied_lighting_profile_debug := false
 
 func _ready() -> void:
 	_world_generator = get_node(world_generator_path) as WorldGenerator
@@ -105,9 +146,9 @@ func _ready() -> void:
 	_elevation_visual = ElevationStackVisualScript.new() as Node2D
 	_elevation_visual.name = "WorldElevationVisual"
 	terrain_visual_root.add_child(_elevation_visual)
-	_cliff_edge_rim_visual = CliffEdgeRimVisualScript.new() as Node2D
-	_cliff_edge_rim_visual.name = "CliffEdgeRimVisual"
-	terrain_visual_root.add_child(_cliff_edge_rim_visual)
+	_chunk_boundary_mesh_root = Node2D.new()
+	_chunk_boundary_mesh_root.name = "ChunkBoundaryMeshRoot"
+	terrain_visual_root.add_child(_chunk_boundary_mesh_root)
 	_shader_cliff_rim_visual = ShaderCliffRimOverlayScript.new() as Node2D
 	_shader_cliff_rim_visual.name = "ShaderCliffRimOverlay"
 	terrain_visual_root.add_child(_shader_cliff_rim_visual)
@@ -128,19 +169,86 @@ func _ready() -> void:
 		shader_cliff_rim_direction_mode,
 		shader_cliff_rim_debug_elevation
 	)
-	_cliff_edge_rim_visual.visible = not shader_cliff_rims_enabled
+	_chunk_boundary_mesh_root.visible = enable_cliff_face_overlay and not shader_cliff_rims_enabled
 	_shader_cliff_rim_visual.visible = shader_cliff_rims_enabled
+	_interior_wall_visual = InteriorWallVisualScript.new() as Node2D
+	_interior_wall_visual.name = "InteriorWallVisual"
+	_interior_wall_visual.y_sort_enabled = true
+	var empty_wall_cells: Array[Vector2i] = []
+	_interior_wall_visual.call("configure", terrain_layer, empty_wall_cells)
+	_interior_wall_visual.visible = false
+	gameplay_y_sort_root.add_child(_interior_wall_visual)
+	_connection_root = Node2D.new()
+	_connection_root.name = "ConnectionRoot"
+	gameplay_y_sort_root.add_child(_connection_root)
+	_lighting_overlay = LightingOverlayScript.new() as Node2D
+	_lighting_overlay.name = "LightingOverlay"
+	_lighting_overlay.z_as_relative = false
+	_lighting_overlay.z_index = 100
+	add_child(_lighting_overlay)
+	_refresh_lighting_projection()
 	ProcSpriteCache.set_debug_logging(procedural_cache_debug)
 	_prewarm_procedural_cache()
 	_update_streaming(true)
 
 func _process(_delta: float) -> void:
+	_sync_lighting_presentation_flags()
+	_sync_ground_item_label_visibility()
 	_update_streaming(false)
 	for _i in range(chunks_per_frame):
 		if _pending_chunks.is_empty():
 			break
 		_generate_chunk(_pending_chunks.pop_front())
 	_process_pending_resource_spawns()
+	_report_lighting_profile(_delta)
+
+
+func set_draw_per_cell_light_debug_enabled(enabled: bool) -> void:
+	draw_per_cell_light_debug = enabled
+	_sync_lighting_presentation_flags()
+
+
+func set_light_source_glows_experimental_enabled(enabled: bool) -> void:
+	draw_light_source_glows_experimental = enabled
+	_sync_lighting_presentation_flags()
+
+
+func set_building_effect_radii_debug_enabled(enabled: bool) -> void:
+	draw_building_effect_radii_debug = enabled
+	_sync_lighting_presentation_flags()
+
+
+func set_ground_item_amount_labels_debug_enabled(enabled: bool) -> void:
+	show_ground_item_amount_labels_debug = enabled
+	_sync_ground_item_label_visibility()
+
+
+func _sync_lighting_presentation_flags() -> void:
+	var overlay_debug_changed := _applied_draw_per_cell_light_debug != draw_per_cell_light_debug \
+		or _applied_draw_light_source_glows_experimental != draw_light_source_glows_experimental
+	if overlay_debug_changed:
+		_applied_draw_per_cell_light_debug = draw_per_cell_light_debug
+		_applied_draw_light_source_glows_experimental = draw_light_source_glows_experimental
+		_queue_lighting_projection_refresh()
+	if _applied_lighting_profile_debug != lighting_profile_debug:
+		_applied_lighting_profile_debug = lighting_profile_debug
+		_refresh_lighting_projection()
+	if _applied_draw_building_effect_radii_debug == draw_building_effect_radii_debug:
+		return
+	_applied_draw_building_effect_radii_debug = draw_building_effect_radii_debug
+	_refresh_construction_effect_visuals()
+
+
+func _sync_ground_item_label_visibility() -> void:
+	if _applied_show_ground_item_amount_labels_debug == show_ground_item_amount_labels_debug:
+		return
+	_applied_show_ground_item_amount_labels_debug = show_ground_item_amount_labels_debug
+	for chunk_data_value: Variant in _loaded_chunks.values():
+		var chunk_data: Dictionary = chunk_data_value
+		for node: Node in chunk_data.get("ground_item_nodes", []):
+			if is_instance_valid(node) and node.has_method("set_amount_label_visible"):
+				node.call("set_amount_label_visible", show_ground_item_amount_labels_debug)
+
 
 func set_shader_cliff_rims_enabled(enabled: bool) -> void:
 	## Runtime presentation switch. Rebuild only the renderer becoming active,
@@ -150,8 +258,8 @@ func set_shader_cliff_rims_enabled(enabled: bool) -> void:
 	shader_cliff_rims_enabled = enabled
 	if _shader_cliff_rim_visual != null:
 		_shader_cliff_rim_visual.visible = enabled
-	if _cliff_edge_rim_visual != null:
-		_cliff_edge_rim_visual.visible = not enabled
+	if _chunk_boundary_mesh_root != null:
+		_chunk_boundary_mesh_root.visible = enable_cliff_face_overlay and not enabled
 	_refresh_cliff_edge_rims()
 
 func is_shader_cliff_rims_enabled() -> bool:
@@ -165,6 +273,60 @@ func set_shader_cliff_rim_direction_mode(direction_mode: int) -> void:
 func get_shader_cliff_rim_direction_mode() -> int:
 	return shader_cliff_rim_direction_mode
 
+func get_cliff_rim_debug_comparison(cell: Vector2i) -> Dictionary:
+	## Compare the shader texture's exact inputs with the CPU fallback predicate.
+	var cpu_elevations: Dictionary = {}
+	var shader_elevations: Dictionary = {}
+	var shader_loaded_mask: Dictionary = {}
+	var cpu_exposed: Array[String] = []
+	var current_elevation: int = _get_effective_elevation_for_rim(cell)
+	for direction_name: String in CLIFF_RIM_NEIGHBOURS:
+		var neighbour: Vector2i = cell + (CLIFF_RIM_NEIGHBOURS[direction_name] as Vector2i)
+		var neighbour_elevation: int = _get_effective_elevation_for_rim(neighbour)
+		cpu_elevations[direction_name] = neighbour_elevation
+		shader_elevations[direction_name] = int(_shader_cliff_rim_visual.call("get_debug_elevation_at_cell", neighbour))
+		shader_loaded_mask[direction_name] = bool(_shader_cliff_rim_visual.call("get_debug_loaded_at_cell", neighbour))
+		if current_elevation > neighbour_elevation:
+			cpu_exposed.append(direction_name)
+	var shader_current: int = int(_shader_cliff_rim_visual.call("get_debug_elevation_at_cell", cell))
+	var shader_exposed: Array[String] = []
+	shader_exposed.assign(_shader_cliff_rim_visual.call("get_debug_exposed_directions", cell))
+	cpu_exposed.sort()
+	shader_exposed.sort()
+	return {
+		"cell": cell,
+		"cpu_elevation": current_elevation,
+		"shader_elevation": shader_current,
+		"cpu_neighbours": cpu_elevations,
+		"shader_neighbours": shader_elevations,
+		"shader_loaded_mask": {
+			"current": bool(_shader_cliff_rim_visual.call("get_debug_loaded_at_cell", cell)),
+			"neighbours": shader_loaded_mask,
+		},
+		"cpu_exposed_directions": cpu_exposed,
+		"shader_exposed_directions": shader_exposed,
+		"matches": current_elevation == shader_current and cpu_elevations == shader_elevations and cpu_exposed == shader_exposed,
+	}
+
+func get_cliff_rim_fragment_debug(world_position: Vector2) -> Dictionary:
+	## Live-scene projection diagnostic for a rendered world position under the mouse.
+	var local_position: Vector2 = _shader_cliff_rim_visual.to_local(world_position)
+	var flat_cell: Vector2i = world_to_cell(world_position)
+	var visible_cell: Vector2i = get_debug_elevation_cell_at_world_position(world_position)
+	var terrain_local_position: Vector2 = terrain_layer.to_local(world_position)
+	var godot_cells_by_elevation: Dictionary = {}
+	for elevation_level in range(0, 3):
+		var top_offset := Vector2(0.0, -16.0 * elevation_level - 8.0 + cliff_rim_vertical_offset)
+		godot_cells_by_elevation[elevation_level] = terrain_layer.local_to_map(terrain_local_position - top_offset)
+	return {
+		"world_position": world_position,
+		"flat_world_to_cell": flat_cell,
+		"visible_top_cell": visible_cell,
+		"visible_cell_comparison": get_cliff_rim_debug_comparison(visible_cell),
+		"godot_cells_by_elevation": godot_cells_by_elevation,
+		"shader_fragment": _shader_cliff_rim_visual.call("get_debug_fragment_analysis", local_position),
+	}
+
 func set_shader_cliff_rim_debug_elevation(enabled: bool) -> void:
 	shader_cliff_rim_debug_elevation = enabled
 	if _shader_cliff_rim_visual != null:
@@ -176,49 +338,190 @@ func is_shader_cliff_rim_debug_elevation_enabled() -> bool:
 func get_cell_world_position(cell: Vector2i) -> Vector2:
 	return terrain_layer.to_global(terrain_layer.map_to_local(cell))
 
+
+func get_cell_visual_world_position(cell: Vector2i, world_space_id: String = "") -> Vector2:
+	## Presentation anchor for visuals that sit on a terrain top. Simulation remains
+	## authoritative for the cell/elevation; CellRenderInfo owns their projection.
+	var resolved_world_space_id := world_space_id if not world_space_id.is_empty() else _active_world_space_id
+	var map_position := terrain_layer.map_to_local(cell)
+	var elevation := get_cell_elevation(cell, resolved_world_space_id)
+	return terrain_layer.to_global(CellRenderInfoRef.get_visible_top_center(map_position, elevation))
+
+
 func world_to_cell(world_position: Vector2) -> Vector2i:
 	return terrain_layer.local_to_map(terrain_layer.to_local(world_position))
 
-func get_active_world_space_id() -> String:
-	## Phase 1 exposes identity without permitting runtime space changes.
-	return SURFACE_WORLD_SPACE_ID
-
-func is_world_space_supported(world_space_id: String) -> bool:
-	return world_space_id == SURFACE_WORLD_SPACE_ID
-
-func get_debug_elevation_cell_at_world_position(world_position: Vector2) -> Vector2i:
-	## Debug-only visible-surface picking; gameplay continues to use world_to_cell().
+func get_visible_terrain_cell_at_world_position(world_position: Vector2, world_space_id: String = SURFACE_WORLD_SPACE_ID) -> Vector2i:
+	## Presentation-aware picking for elevated cells; callers must still validate intent with simulation authorities.
 	var local_position: Vector2 = terrain_layer.to_local(world_position)
 	var flat_cell: Vector2i = terrain_layer.local_to_map(local_position)
-	var found: bool = false
-	var best_cell: Vector2i = flat_cell
-	var best_distance_squared: float = INF
-	var best_elevation: int = -1
+	var cells: Array[Vector2i] = _resolve_visible_terrain_cells(local_position, flat_cell, world_space_id)
+	return cells[0] if not cells.is_empty() else flat_cell
+
+func get_visible_terrain_cells_at_world_position(world_position: Vector2, world_space_id: String = SURFACE_WORLD_SPACE_ID) -> Array[Vector2i]:
+	## Returns all projected terrain cells under the pointer, ordered from strongest visible hit to weakest fallback.
+	var local_position: Vector2 = terrain_layer.to_local(world_position)
+	var flat_cell: Vector2i = terrain_layer.local_to_map(local_position)
+	return _resolve_visible_terrain_cells(local_position, flat_cell, world_space_id)
+
+func get_hover_inspection_snapshot(world_position: Vector2) -> Dictionary:
+	## Compact read-only tile snapshot for Main's HUD. Terrain/resource data is
+	## loaded projection only; simulation-owned records come from WorldState.
+	var world_space_id: String = _active_world_space_id
+	var candidates: Array[Vector2i] = get_visible_terrain_cells_at_world_position(world_position, world_space_id)
+	var cell: Vector2i = candidates[0] if not candidates.is_empty() else world_to_cell(world_position)
+	var tile_info: Dictionary = get_effective_tile_info(cell, world_space_id)
+	var terrain_id: String = String(tile_info.get("terrain", ""))
+	var authority: Dictionary = {}
+	if _world_state != null and _world_state.has_method("get_cell_authority_snapshot"):
+		authority = _world_state.call("get_cell_authority_snapshot", cell, world_space_id)
+	return {
+		"ok": not tile_info.is_empty(),
+		"world_space_id": world_space_id,
+		"cell": cell,
+		"loaded": is_cell_loaded(cell, world_space_id),
+		"terrain_id": terrain_id,
+		"terrain_name": TerrainConfigRef.get_display_name(terrain_id) if TerrainConfigRef.has_terrain(terrain_id) else terrain_id,
+		"elevation": int(tile_info.get("elevation", 0)),
+		"walkable": bool(tile_info.get("walkable", false)),
+		"mineable": bool(tile_info.get("mineable", false)),
+		"resource_node": _get_loaded_resource_snapshot_at_cell(cell, world_space_id),
+		"authority": authority,
+	}
+
+func get_active_world_space_id() -> String:
+	return _active_world_space_id
+
+func is_world_space_supported(world_space_id: String) -> bool:
+	if world_space_id == SURFACE_WORLD_SPACE_ID:
+		return true
+	return _world_state != null and not _get_interior_for_world_space(world_space_id).is_empty()
+
+func set_active_world_space_id(world_space_id: String) -> bool:
+	## Discard every active projection before loading the destination WorldSpace.
+	if not is_world_space_supported(world_space_id):
+		return false
+	if world_space_id == _active_world_space_id:
+		return true
+	_clear_active_world_space_projections()
+	_active_world_space_id = world_space_id
+	_last_center_chunk = Vector2i(999999, 999999)
+	_refresh_interior_wall_visual()
+	_update_streaming(true)
+	_refresh_connection_markers()
+	_refresh_lighting_projection()
+	active_world_space_changed.emit(_active_world_space_id)
+	return true
+
+func get_loaded_chunk_world_space_ids() -> Array[String]:
+	## Read-only validation snapshot; one active WorldSpace should own every loaded projection.
+	var world_space_ids: Array[String] = []
+	for chunk_value: Variant in _loaded_chunks.values():
+		var world_space_id: String = String((chunk_value as Dictionary).get("world_space_id", ""))
+		if not world_space_id.is_empty() and world_space_id not in world_space_ids:
+			world_space_ids.append(world_space_id)
+	world_space_ids.sort()
+	return world_space_ids
+
+func _clear_active_world_space_projections() -> void:
+	_pending_chunks.clear()
+	_queued_chunk_keys.clear()
+	_pending_resource_spawns.clear()
+	_resource_index.clear()
+	_clear_connection_markers()
+	if _interior_wall_visual != null:
+		var empty_wall_cells: Array[Vector2i] = []
+		_interior_wall_visual.call("configure", terrain_layer, empty_wall_cells)
+		_interior_wall_visual.visible = false
+	terrain_layer.clear()
+	_refresh_lighting_projection()
+	for projection_root: Node in [resource_root, construction_root, stockpile_zone_root, ground_item_root]:
+		for child: Node in projection_root.get_children():
+			projection_root.remove_child(child)
+			child.queue_free()
+	for chunk_coord_value: Variant in _debug_elevation_markers_by_chunk.keys():
+		_remove_debug_elevation_markers_for_chunk(chunk_coord_value as Vector2i)
+	_clear_debug_elevation_preview()
+	_loaded_chunks.clear()
+	if _elevation_visual != null and is_instance_valid(_elevation_visual):
+		_elevation_visual.call("configure_chunks", terrain_layer.tile_set, {})
+	_clear_cliff_face_mesh_renderers()
+	if _shader_cliff_rim_visual != null and is_instance_valid(_shader_cliff_rim_visual):
+		_shader_cliff_rim_visual.call("clear")
+
+func get_debug_elevation_cell_at_world_position(world_position: Vector2) -> Vector2i:
+	## Debug tooling shares the same presentation-aware pick used for terrain context actions.
+	var local_position: Vector2 = terrain_layer.to_local(world_position)
+	var flat_cell: Vector2i = terrain_layer.local_to_map(local_position)
+	var cells: Array[Vector2i] = _resolve_visible_terrain_cells(local_position, flat_cell, _active_world_space_id)
+	return cells[0] if not cells.is_empty() else flat_cell
+
+func _resolve_visible_terrain_cells(local_position: Vector2, flat_cell: Vector2i, world_space_id: String) -> Array[Vector2i]:
+	var hits: Array[Dictionary] = []
 	for y in range(flat_cell.y - DEBUG_ELEVATION_PICK_RADIUS, flat_cell.y + DEBUG_ELEVATION_PICK_RADIUS + 1):
 		for x in range(flat_cell.x - DEBUG_ELEVATION_PICK_RADIUS, flat_cell.x + DEBUG_ELEVATION_PICK_RADIUS + 1):
 			var candidate := Vector2i(x, y)
-			if not is_cell_loaded(candidate):
+			if not is_cell_loaded(candidate, world_space_id):
 				continue
-			var elevation: int = clampi(get_cell_elevation(candidate), 0, 2)
-			var top_center: Vector2 = CellRenderInfoRef.get_visible_top_center(terrain_layer.map_to_local(candidate), elevation)
-			if not CellRenderInfoRef.contains_visible_top(local_position, top_center):
+			var elevation: int = clampi(get_cell_elevation(candidate, world_space_id), 0, 2)
+			var hit: Dictionary = _get_visible_cell_hit(local_position, candidate, elevation, world_space_id)
+			if hit.is_empty():
 				continue
-			var offset: Vector2 = local_position - top_center
-			var distance_squared: float = offset.length_squared()
-			if not found or distance_squared < best_distance_squared or (is_equal_approx(distance_squared, best_distance_squared) and elevation > best_elevation):
-				found = true
-				best_cell = candidate
-				best_elevation = elevation
-				best_distance_squared = distance_squared
-	return best_cell if found else flat_cell
+			hit["cell"] = candidate
+			hits.append(hit)
+	hits.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var elevation_a: int = int(a.get("elevation", 0))
+		var elevation_b: int = int(b.get("elevation", 0))
+		if elevation_a != elevation_b:
+			return elevation_a > elevation_b
+		var level_a: int = int(a.get("hit_level", 0))
+		var level_b: int = int(b.get("hit_level", 0))
+		if level_a != level_b:
+			return level_a > level_b
+		return float(a.get("distance_squared", 0.0)) < float(b.get("distance_squared", 0.0))
+	)
+	var cells: Array[Vector2i] = []
+	for hit: Dictionary in hits:
+		var cell: Vector2i = hit.get("cell", flat_cell)
+		if cell not in cells:
+			cells.append(cell)
+	if flat_cell not in cells:
+		cells.append(flat_cell)
+	return cells
+
+func _get_visible_cell_hit(local_position: Vector2, cell: Vector2i, elevation: int, world_space_id: String) -> Dictionary:
+	# Test each rendered block level so clicks on cliff faces resolve to the raised cell instead of the flat base cell.
+	for level in range(elevation, -1, -1):
+		var top_center: Vector2 = CellRenderInfoRef.get_visible_top_center(terrain_layer.map_to_local(cell), level)
+		if CellRenderInfoRef.contains_visible_top(local_position, top_center):
+			return {
+				"elevation": elevation,
+				"hit_level": level,
+				"distance_squared": local_position.distance_squared_to(top_center),
+			}
+	var elevated_top_center: Vector2 = CellRenderInfoRef.get_visible_top_center(terrain_layer.map_to_local(cell), elevation)
+	for direction_name_value: Variant in CLIFF_RIM_NEIGHBOURS.keys():
+		var direction_name: String = String(direction_name_value)
+		var neighbour_cell: Vector2i = cell + CLIFF_RIM_NEIGHBOURS[direction_name]
+		var neighbour_elevation: int = clampi(get_cell_elevation(neighbour_cell, world_space_id), 0, 2)
+		if elevation <= neighbour_elevation:
+			continue
+		var face_polygon: PackedVector2Array = _build_cliff_face_polygon(elevated_top_center, direction_name, elevation - neighbour_elevation)
+		if face_polygon.size() >= 3 and Geometry2D.is_point_in_polygon(local_position, face_polygon):
+			return {
+				"elevation": elevation,
+				"hit_level": elevation,
+				"distance_squared": local_position.distance_squared_to(elevated_top_center),
+			}
+	return {}
 
 func is_cell_loaded(cell: Vector2i, world_space_id: String = SURFACE_WORLD_SPACE_ID) -> bool:
-	if not is_world_space_supported(world_space_id):
+	if not is_world_space_supported(world_space_id) or world_space_id != _active_world_space_id:
 		return false
 	return _loaded_chunks.has(_cell_to_chunk(cell))
 
 func is_cell_blocked_by_resource(cell: Vector2i, world_space_id: String = SURFACE_WORLD_SPACE_ID) -> bool:
-	if not is_world_space_supported(world_space_id):
+	if not is_world_space_supported(world_space_id) or world_space_id != _active_world_space_id:
 		return false
 	var chunk_coord: Vector2i = _cell_to_chunk(cell)
 	if not _loaded_chunks.has(chunk_coord):
@@ -230,6 +533,16 @@ func is_cell_blocked_by_resource(cell: Vector2i, world_space_id: String = SURFAC
 
 func set_world_state(world_state: Node) -> void:
 	if _world_state != null:
+		if _world_state.connection_added.is_connected(_on_connection_added):
+			_world_state.connection_added.disconnect(_on_connection_added)
+		if _world_state.connection_removed.is_connected(_on_connection_removed):
+			_world_state.connection_removed.disconnect(_on_connection_removed)
+		if _world_state.connections_replaced.is_connected(_on_connections_replaced):
+			_world_state.connections_replaced.disconnect(_on_connections_replaced)
+		if _world_state.interior_added.is_connected(_on_interior_added):
+			_world_state.interior_added.disconnect(_on_interior_added)
+		if _world_state.interiors_replaced.is_connected(_on_interiors_replaced):
+			_world_state.interiors_replaced.disconnect(_on_interiors_replaced)
 		if _world_state.construction_site_added.is_connected(_on_construction_site_added):
 			_world_state.construction_site_added.disconnect(_on_construction_site_added)
 		if _world_state.construction_site_changed.is_connected(_on_construction_site_changed):
@@ -238,6 +551,8 @@ func set_world_state(world_state: Node) -> void:
 			_world_state.construction_site_cancelled.disconnect(_on_construction_site_cancelled)
 		if _world_state.day_phase_changed.is_connected(_on_building_effect_day_phase_changed):
 			_world_state.day_phase_changed.disconnect(_on_building_effect_day_phase_changed)
+		if _world_state.lighting_changed.is_connected(_on_lighting_changed):
+			_world_state.lighting_changed.disconnect(_on_lighting_changed)
 		if _world_state.construction_sites_replaced.is_connected(_on_construction_sites_replaced):
 			_world_state.construction_sites_replaced.disconnect(_on_construction_sites_replaced)
 		if _world_state.harvest_order_added.is_connected(_on_harvest_order_added):
@@ -246,6 +561,10 @@ func set_world_state(world_state: Node) -> void:
 			_world_state.harvest_order_removed.disconnect(_on_harvest_order_removed)
 		if _world_state.harvest_orders_replaced.is_connected(_on_harvest_orders_replaced):
 			_world_state.harvest_orders_replaced.disconnect(_on_harvest_orders_replaced)
+		if _world_state.mined_terrain_delta_added.is_connected(_on_mined_terrain_delta_added):
+			_world_state.mined_terrain_delta_added.disconnect(_on_mined_terrain_delta_added)
+		if _world_state.mined_terrain_deltas_replaced.is_connected(_on_mined_terrain_deltas_replaced):
+			_world_state.mined_terrain_deltas_replaced.disconnect(_on_mined_terrain_deltas_replaced)
 		if _world_state.stockpile_zone_added.is_connected(_on_stockpile_zone_added):
 			_world_state.stockpile_zone_added.disconnect(_on_stockpile_zone_added)
 		if _world_state.stockpile_zone_removed.is_connected(_on_stockpile_zone_removed):
@@ -260,15 +579,24 @@ func set_world_state(world_state: Node) -> void:
 			_world_state.ground_items_replaced.disconnect(_on_ground_items_replaced)
 	_world_state = world_state
 	if _world_state == null:
+		_clear_connection_markers()
 		return
+	_world_state.connection_added.connect(_on_connection_added)
+	_world_state.connection_removed.connect(_on_connection_removed)
+	_world_state.connections_replaced.connect(_on_connections_replaced)
+	_world_state.interior_added.connect(_on_interior_added)
+	_world_state.interiors_replaced.connect(_on_interiors_replaced)
 	_world_state.construction_site_added.connect(_on_construction_site_added)
 	_world_state.construction_site_changed.connect(_on_construction_site_changed)
 	_world_state.construction_site_cancelled.connect(_on_construction_site_cancelled)
 	_world_state.construction_sites_replaced.connect(_on_construction_sites_replaced)
 	_world_state.day_phase_changed.connect(_on_building_effect_day_phase_changed)
+	_world_state.lighting_changed.connect(_on_lighting_changed)
 	_world_state.harvest_order_added.connect(_on_harvest_order_added)
 	_world_state.harvest_order_removed.connect(_on_harvest_order_removed)
 	_world_state.harvest_orders_replaced.connect(_on_harvest_orders_replaced)
+	_world_state.mined_terrain_delta_added.connect(_on_mined_terrain_delta_added)
+	_world_state.mined_terrain_deltas_replaced.connect(_on_mined_terrain_deltas_replaced)
 	_world_state.stockpile_zone_added.connect(_on_stockpile_zone_added)
 	_world_state.stockpile_zone_removed.connect(_on_stockpile_zone_removed)
 	_world_state.stockpile_zones_replaced.connect(_on_stockpile_zones_replaced)
@@ -279,6 +607,150 @@ func set_world_state(world_state: Node) -> void:
 	_on_harvest_orders_replaced()
 	_on_stockpile_zones_replaced()
 	_on_ground_items_replaced()
+	_refresh_connection_markers()
+	_refresh_lighting_projection()
+
+func get_connection_marker_at_world_position(world_position: Vector2) -> Dictionary:
+	var closest: Node2D
+	var closest_distance_squared: float = INF
+	for marker: Node2D in _connection_markers:
+		if not is_instance_valid(marker) or not bool(marker.call("contains_world_position", world_position)):
+			continue
+		var marker_world_position: Vector2 = marker.call("get_visual_world_position")
+		var distance_squared: float = marker_world_position.distance_squared_to(world_position)
+		if distance_squared < closest_distance_squared:
+			closest = marker
+			closest_distance_squared = distance_squared
+	return closest.call("get_context_snapshot") if closest != null else {}
+
+func get_connection_marker_count() -> int:
+	return _connection_markers.size()
+
+func get_connection_marker_snapshots() -> Array[Dictionary]:
+	var snapshots: Array[Dictionary] = []
+	for marker: Node2D in _connection_markers:
+		if not is_instance_valid(marker):
+			continue
+		var snapshot: Dictionary = marker.call("get_context_snapshot")
+		snapshot["world_position"] = marker.call("get_visual_world_position")
+		snapshot["tile_anchor_world_position"] = marker.call("get_tile_anchor_world_position")
+		snapshots.append(snapshot)
+	return snapshots
+
+func _refresh_connection_markers() -> void:
+	_clear_connection_markers()
+	if _world_state == null or _connection_root == null:
+		return
+	for connection: Dictionary in _world_state.get_connections_for_world_space(_active_world_space_id):
+		if not bool(connection.get("enabled", false)):
+			continue
+		var endpoint_cell: Vector2i
+		var action_label: String
+		var is_cave_exit: bool = _is_interior_world_space(_active_world_space_id)
+		if String(connection.get("from_world_space_id", "")) == _active_world_space_id:
+			endpoint_cell = connection.get("from_cell", Vector2i.ZERO)
+			action_label = "Exit Mine" if is_cave_exit else "Enter Mine"
+		elif bool(connection.get("bidirectional", false)) and String(connection.get("to_world_space_id", "")) == _active_world_space_id:
+			endpoint_cell = connection.get("to_cell", Vector2i.ZERO)
+			action_label = "Exit Mine" if is_cave_exit else "Enter Mine"
+		else:
+			continue
+		if not is_cell_loaded(endpoint_cell, _active_world_space_id):
+			continue
+		var marker: Node2D = ConnectionMarkerVisualScript.new() as Node2D
+		marker.name = "ConnectionMarker_%s" % String(connection.get("connection_id", "unknown"))
+		marker.call("configure", terrain_layer.tile_set, String(connection.get("connection_id", "")), _active_world_space_id, endpoint_cell, get_cell_elevation(endpoint_cell, _active_world_space_id), action_label, is_cave_exit, _get_connection_endpoint_facing(connection, endpoint_cell))
+		_connection_root.add_child(marker)
+		_connection_markers.append(marker)
+
+func _get_connection_endpoint_facing(connection: Dictionary, endpoint_cell: Vector2i) -> String:
+	## Presentation-only facing derived from the other authoritative connection endpoint.
+	var other_cell: Vector2i = connection.get("to_cell", Vector2i.ZERO)
+	if endpoint_cell == other_cell:
+		other_cell = connection.get("from_cell", Vector2i.ZERO)
+	var offset := other_cell - endpoint_cell
+	if abs(offset.x) >= abs(offset.y):
+		return "east" if offset.x >= 0 else "west"
+	return "south" if offset.y >= 0 else "north"
+
+func _clear_connection_markers() -> void:
+	for marker: Node2D in _connection_markers:
+		if not is_instance_valid(marker):
+			continue
+		if marker.get_parent() != null:
+			marker.get_parent().remove_child(marker)
+		marker.queue_free()
+	_connection_markers.clear()
+
+func _refresh_interior_wall_visual() -> void:
+	if _interior_wall_visual == null:
+		return
+	var interior: Dictionary = _get_interior_for_world_space(_active_world_space_id)
+	if interior.is_empty():
+		_interior_wall_visual.visible = false
+		var empty_wall_cells: Array[Vector2i] = []
+		_interior_wall_visual.call("configure", terrain_layer, empty_wall_cells)
+		return
+	_interior_wall_visual.call("configure", terrain_layer, InteriorTerrainSourceRef.get_wall_cells(interior))
+	_interior_wall_visual.visible = true
+
+func _on_connection_added(_connection: Dictionary) -> void:
+	_refresh_connection_markers()
+
+func _on_connection_removed(_connection_id: String) -> void:
+	_refresh_connection_markers()
+
+func _on_connections_replaced() -> void:
+	_refresh_connection_markers()
+
+func _on_interior_added(_interior: Dictionary) -> void:
+	_refresh_interior_wall_visual()
+	_refresh_connection_markers()
+
+func _on_interiors_replaced() -> void:
+	_refresh_interior_wall_visual()
+	_refresh_connection_markers()
+
+func _on_mined_terrain_delta_added(delta: Dictionary) -> void:
+	_apply_mined_terrain_delta_projection(delta)
+
+func _on_mined_terrain_deltas_replaced() -> void:
+	if _active_world_space_id != SURFACE_WORLD_SPACE_ID:
+		return
+	for chunk_coord_value: Variant in _loaded_chunks.keys():
+		var chunk_coord: Vector2i = chunk_coord_value
+		var tile_lookup: Dictionary = _loaded_chunks[chunk_coord].get("tile_lookup", {})
+		for tile_info_value: Variant in (_loaded_chunks[chunk_coord].get("tiles", []) as Array):
+			var tile_info: Dictionary = tile_info_value
+			tile_lookup[tile_info.cell] = _resolve_surface_projected_tile_info(tile_info)
+		_loaded_chunks[chunk_coord]["tile_lookup"] = tile_lookup
+	_refresh_elevation_visuals()
+
+func _apply_mined_terrain_delta_projection(delta: Dictionary) -> void:
+	if _active_world_space_id != SURFACE_WORLD_SPACE_ID:
+		return
+	var world_space_id: String = String(delta.get("world_space_id", SURFACE_WORLD_SPACE_ID))
+	if world_space_id != SURFACE_WORLD_SPACE_ID:
+		return
+	var cell: Vector2i = delta.get("cell", Vector2i.ZERO)
+	var chunk_coord: Vector2i = _cell_to_chunk(cell)
+	if not _loaded_chunks.has(chunk_coord):
+		return
+	var tile_info: Dictionary = _build_tile_info_for_mined_delta(delta)
+	if tile_info.is_empty():
+		return
+	var tile_lookup: Dictionary = _loaded_chunks[chunk_coord].get("tile_lookup", {})
+	tile_lookup[cell] = tile_info
+	_loaded_chunks[chunk_coord]["tile_lookup"] = tile_lookup
+	_refresh_terrain_visuals_near_cell(cell)
+
+func _get_interior_for_world_space(world_space_id: String) -> Dictionary:
+	if _world_state == null:
+		return {}
+	return _world_state.get_interior_for_world_space(world_space_id)
+
+func _is_interior_world_space(world_space_id: String) -> bool:
+	return not _get_interior_for_world_space(world_space_id).is_empty()
 
 func set_harvest_designation_input_enabled(enabled: bool) -> void:
 	## Main owns the transient control mode; this only gates presentation-originated click intent.
@@ -288,13 +760,26 @@ func is_harvest_designation_input_enabled() -> bool:
 	return _harvest_designation_input_enabled
 
 func get_effective_tile_info(cell: Vector2i, world_space_id: String = SURFACE_WORLD_SPACE_ID) -> Dictionary:
-	if not is_world_space_supported(world_space_id):
+	if not is_world_space_supported(world_space_id) or world_space_id != _active_world_space_id:
 		return {}
 	var chunk_coord: Vector2i = _cell_to_chunk(cell)
 	if _loaded_chunks.has(chunk_coord):
 		var tile_lookup: Dictionary = _loaded_chunks[chunk_coord].get("tile_lookup", {})
 		if tile_lookup.has(cell):
 			return tile_lookup[cell].duplicate()
+	var interior: Dictionary = _get_interior_for_world_space(world_space_id)
+	if not interior.is_empty():
+		return InteriorTerrainSourceRef.get_tile_info(interior, cell)
+	var mined_tile_info: Dictionary = _build_mined_terrain_tile_info(cell, world_space_id)
+	if not mined_tile_info.is_empty():
+		return mined_tile_info
+	return _manual_tile_overrides.get(cell, _world_generator.get_tile_info(cell)).duplicate()
+
+func get_surface_effective_tile_info(cell: Vector2i) -> Dictionary:
+	## Read-only import/validation query for surface terrain deltas; independent of the currently rendered WorldSpace.
+	var mined_tile_info: Dictionary = _build_mined_terrain_tile_info(cell, SURFACE_WORLD_SPACE_ID)
+	if not mined_tile_info.is_empty():
+		return mined_tile_info
 	return _manual_tile_overrides.get(cell, _world_generator.get_tile_info(cell)).duplicate()
 
 func get_cell_elevation(cell: Vector2i, world_space_id: String = SURFACE_WORLD_SPACE_ID) -> int:
@@ -402,6 +887,12 @@ func _clear_debug_elevation_preview() -> void:
 func is_cell_mineable(cell: Vector2i) -> bool:
 	return bool(get_effective_tile_info(cell).get("mineable", false))
 
+func is_loaded_surface_rock_wall(cell: Vector2i) -> bool:
+	if _active_world_space_id != SURFACE_WORLD_SPACE_ID or not is_cell_loaded(cell, SURFACE_WORLD_SPACE_ID):
+		return false
+	var tile_info: Dictionary = get_effective_tile_info(cell, SURFACE_WORLD_SPACE_ID)
+	return String(tile_info.get("terrain", "")) == "ROCK_WALL" and bool(tile_info.get("mineable", false))
+
 func has_manual_tile_override(cell: Vector2i) -> bool:
 	return _manual_tile_overrides.has(cell)
 
@@ -426,6 +917,8 @@ func get_chunk_delta_summary(chunk_coord: Vector2i) -> Dictionary:
 	}
 
 func request_place_manual_tile(cell: Vector2i, terrain_name: String) -> Dictionary:
+	if _active_world_space_id != SURFACE_WORLD_SPACE_ID:
+		return _build_manual_placement_result(false, "unsupported_world_space_id", cell, terrain_name)
 	var chunk_coord: Vector2i = _cell_to_chunk(cell)
 	if not _loaded_chunks.has(chunk_coord):
 		return _build_manual_placement_result(false, "cell_not_loaded", cell, terrain_name)
@@ -439,7 +932,6 @@ func request_place_manual_tile(cell: Vector2i, terrain_name: String) -> Dictiona
 	if tile_info.is_empty():
 		return _build_manual_placement_result(false, "tile_info_unavailable", cell, terrain_name)
 	_manual_tile_overrides[cell] = tile_info
-	terrain_layer.set_cell(tile_info.cell, tile_info.source_id, tile_info.atlas_coords)
 	var tile_lookup: Dictionary = _loaded_chunks[chunk_coord].get("tile_lookup", {})
 	tile_lookup[cell] = tile_info
 	_loaded_chunks[chunk_coord]["tile_lookup"] = tile_lookup
@@ -457,30 +949,30 @@ func _build_manual_placement_result(ok: bool, reason: String, cell: Vector2i, te
 		"terrain_name": terrain_name,
 	}
 
-func get_random_walkable_cell_near(origin: Vector2i, radius: int, attempts: int = 32, require_loaded_same_elevation: bool = true) -> Vector2i:
+func get_random_walkable_cell_near(origin: Vector2i, radius: int, attempts: int = 32, require_loaded_same_elevation: bool = true, world_space_id: String = SURFACE_WORLD_SPACE_ID) -> Vector2i:
 	## Movement callers receive loaded candidates on the origin elevation. Initial
 	## population placement opts out because it runs before streaming is populated.
-	if require_loaded_same_elevation and not is_cell_loaded(origin):
+	if require_loaded_same_elevation and not is_cell_loaded(origin, world_space_id):
 		return origin
 	for _i in range(attempts):
 		var candidate: Vector2i = origin + Vector2i(_wander_rng.randi_range(-radius, radius), _wander_rng.randi_range(-radius, radius))
-		if _is_random_walkable_candidate(origin, candidate, require_loaded_same_elevation):
+		if _is_random_walkable_candidate(origin, candidate, require_loaded_same_elevation, world_space_id):
 			return candidate
 	for step in range(1, radius * 2):
 		for offset_x in range(-step, step + 1):
 			for offset_y in range(-step, step + 1):
 				var candidate: Vector2i = origin + Vector2i(offset_x, offset_y)
-				if _is_random_walkable_candidate(origin, candidate, require_loaded_same_elevation):
+				if _is_random_walkable_candidate(origin, candidate, require_loaded_same_elevation, world_space_id):
 					return candidate
 	return origin
 
-func _is_random_walkable_candidate(origin: Vector2i, candidate: Vector2i, require_loaded_same_elevation: bool) -> bool:
-	var tile_info: Dictionary = get_effective_tile_info(candidate)
+func _is_random_walkable_candidate(origin: Vector2i, candidate: Vector2i, require_loaded_same_elevation: bool, world_space_id: String) -> bool:
+	var tile_info: Dictionary = get_effective_tile_info(candidate, world_space_id)
 	if not bool(tile_info.get("walkable", false)):
 		return false
 	if not require_loaded_same_elevation:
 		return true
-	return is_cell_loaded(candidate) and int(tile_info.get("elevation", 0)) == get_cell_elevation(origin)
+	return is_cell_loaded(candidate, world_space_id) and int(tile_info.get("elevation", 0)) == get_cell_elevation(origin, world_space_id)
 
 func _prewarm_procedural_cache() -> void:
 	if not prewarm_procedural_variants:
@@ -510,7 +1002,7 @@ func _update_streaming(force_sort: bool) -> void:
 			var unload_end_usec := Time.get_ticks_usec()
 			var snapshot := get_streaming_lifecycle_debug_snapshot()
 			print(
-				"STREAM_LIFECYCLE_PROFILE center=%s prune_ms=%.3f queue_ms=%.3f sort_ms=%.3f unload_ms=%.3f total_ms=%.3f loaded_chunks=%d loaded_cells=%d resource_nodes=%d pending_chunks=%d stale_pending=%d pending_resources=%d stale_resource_jobs=%d proc_cache=%d elevation_chunks=%d elevation_cells=%d shader_chunks=%d shader_slots=%d cpu_chunks=%d cpu_segments=%d stale_visual_chunks=%d manual_overrides=%d depleted_ids=%d" % [
+				"STREAM_LIFECYCLE_PROFILE center=%s prune_ms=%.3f queue_ms=%.3f sort_ms=%.3f unload_ms=%.3f total_ms=%.3f loaded_chunks=%d loaded_cells=%d resource_nodes=%d pending_chunks=%d stale_pending=%d pending_resources=%d stale_resource_jobs=%d proc_cache=%d elevation_chunks=%d elevation_cells=%d shader_chunks=%d shader_slots=%d boundary_mesh_chunks=%d boundary_mesh_segments=%d stale_visual_chunks=%d manual_overrides=%d depleted_ids=%d" % [
 					center_chunk,
 					_usec_to_msec(prune_end_usec - profile_start_usec),
 					_usec_to_msec(queue_end_usec - prune_end_usec),
@@ -521,7 +1013,7 @@ func _update_streaming(force_sort: bool) -> void:
 					int(snapshot["pending_chunks"]), int(snapshot["stale_pending_chunks"]), int(snapshot["pending_resource_spawns"]),
 					int(snapshot["stale_resource_spawns"]), int(snapshot["procedural_cache"]), int(snapshot["elevation_chunks"]),
 					int(snapshot["elevation_cells"]), int(snapshot["shader_chunks"]), int(snapshot["shader_slots"]),
-					int(snapshot["cpu_rim_chunks"]), int(snapshot["cpu_rim_segments"]), int(snapshot["stale_visual_chunks"]),
+					int(snapshot["boundary_mesh_chunks"]), int(snapshot["boundary_mesh_segments"]), int(snapshot["stale_visual_chunks"]),
 					int(snapshot["manual_overrides"]), int(snapshot["depleted_resource_ids"]),
 				]
 			)
@@ -570,16 +1062,16 @@ func _generate_chunk(chunk_coord: Vector2i) -> void:
 	if maxi(abs(chunk_coord.x - _last_center_chunk.x), abs(chunk_coord.y - _last_center_chunk.y)) > load_radius:
 		return
 	var profile_start_usec: int = Time.get_ticks_usec() if chunk_profile_debug else 0
-	var chunk_data: Dictionary = _world_generator.generate_chunk(chunk_coord)
+	var active_interior: Dictionary = _get_interior_for_world_space(_active_world_space_id)
+	var chunk_data: Dictionary = InteriorTerrainSourceRef.generate_chunk(active_interior, chunk_coord, WorldGenerator.CHUNK_SIZE) if not active_interior.is_empty() else _world_generator.generate_chunk(chunk_coord)
 	var generation_end_usec: int = Time.get_ticks_usec() if chunk_profile_debug else 0
 	var tile_lookup: Dictionary = {}
 	for tile_info: Dictionary in chunk_data.tiles:
-		var final_tile_info: Dictionary = _manual_tile_overrides.get(tile_info.cell, tile_info)
-		terrain_layer.set_cell(final_tile_info.cell, final_tile_info.source_id, final_tile_info.atlas_coords)
+		var final_tile_info: Dictionary = _resolve_surface_projected_tile_info(tile_info) if _active_world_space_id == SURFACE_WORLD_SPACE_ID else tile_info
 		tile_lookup[final_tile_info.cell] = final_tile_info
-	var tile_write_end_usec: int = Time.get_ticks_usec() if chunk_profile_debug else 0
 	var resource_nodes: Array[Node] = []
 	_loaded_chunks[chunk_coord] = {
+		"world_space_id": _active_world_space_id,
 		"resource_nodes": resource_nodes,
 		"construction_nodes": [],
 		"stockpile_zone_nodes": [],
@@ -588,6 +1080,9 @@ func _generate_chunk(chunk_coord: Vector2i) -> void:
 		"tiles": chunk_data.tiles,
 		"tile_lookup": tile_lookup,
 	}
+	_refresh_terrain_tiles_for_loaded_chunk(chunk_coord)
+	_refresh_neighbour_terrain_variant_edges_for_loaded_chunk(chunk_coord)
+	var tile_write_end_usec: int = Time.get_ticks_usec() if chunk_profile_debug else 0
 	var elevation_start_usec: int = Time.get_ticks_usec() if chunk_profile_debug else 0
 	_refresh_elevation_stack_visual_chunks([chunk_coord])
 	var elevation_end_usec: int = Time.get_ticks_usec() if chunk_profile_debug else 0
@@ -615,11 +1110,23 @@ func _generate_chunk(chunk_coord: Vector2i) -> void:
 	_spawn_construction_visuals_for_chunk(chunk_coord)
 	_spawn_stockpile_zone_visuals_for_chunk(chunk_coord)
 	_spawn_ground_item_visuals_for_chunk(chunk_coord)
+	_refresh_connection_markers()
+	_refresh_lighting_projection()
 	chunk_generated.emit(chunk_coord)
 	if chunk_profile_debug:
 		var profile_end_usec := Time.get_ticks_usec()
+		_record_chunk_load_profile({
+			"generation": generation_end_usec - profile_start_usec,
+			"tile_writes": tile_write_end_usec - generation_end_usec,
+			"elevation_stack": elevation_end_usec - elevation_start_usec,
+			"elevation_texture": int(shader_profile.get("texture_usec", 0)),
+			"shader_overlay": int(shader_profile.get("overlay_usec", 0)),
+			"boundary_mesh": rim_end_usec - elevation_end_usec if not shader_cliff_rims_enabled else 0,
+			"resource_setup": profile_end_usec - rim_end_usec,
+			"total": profile_end_usec - profile_start_usec,
+		})
 		print(
-			"CHUNK_PROFILE load=%s generation_ms=%.3f tile_writes_ms=%.3f elevation_stack_ms=%.3f elevation_texture_ms=%.3f shader_overlay_ms=%.3f rim_fallback_ms=%.3f cliff_rims_ms=%.3f resource_setup_ms=%.3f total_ms=%.3f loaded_chunks=%d" % [
+			"CHUNK_PROFILE load=%s generation_ms=%.3f tile_writes_ms=%.3f elevation_stack_ms=%.3f elevation_texture_ms=%.3f shader_overlay_ms=%.3f boundary_mesh_ms=%.3f cliff_rims_ms=%.3f resource_setup_ms=%.3f total_ms=%.3f loaded_chunks=%d" % [
 				chunk_coord,
 				_usec_to_msec(generation_end_usec - profile_start_usec),
 				_usec_to_msec(tile_write_end_usec - generation_end_usec),
@@ -636,6 +1143,7 @@ func _generate_chunk(chunk_coord: Vector2i) -> void:
 
 func _refresh_elevation_visuals() -> void:
 	_refresh_cliff_edge_rims()
+	_refresh_terrain_tiles_for_loaded_chunks()
 	_refresh_elevation_stack_visuals()
 
 func _refresh_elevation_stack_visuals() -> void:
@@ -663,6 +1171,79 @@ func _refresh_elevation_stack_visual_chunks(chunk_coords: Array) -> void:
 			_build_elevation_render_infos_for_chunk(chunk_coord)
 		)
 
+func _refresh_terrain_tiles_for_loaded_chunks() -> void:
+	for chunk_coord_value: Variant in _loaded_chunks.keys():
+		var chunk_coord: Vector2i = chunk_coord_value
+		_refresh_terrain_tiles_for_loaded_chunk(chunk_coord)
+
+func _refresh_terrain_tiles_for_loaded_chunk(chunk_coord: Vector2i) -> void:
+	if not _loaded_chunks.has(chunk_coord):
+		return
+	var tile_lookup: Dictionary = _loaded_chunks[chunk_coord].get("tile_lookup", {})
+	for tile_info_value: Variant in tile_lookup.values():
+		var tile_info: Dictionary = tile_info_value as Dictionary
+		_write_terrain_visual_tile(tile_info)
+
+func _refresh_neighbour_terrain_variant_edges_for_loaded_chunk(chunk_coord: Vector2i) -> void:
+	## A newly loaded chunk can affect north/west edge variants in adjacent
+	## loaded chunks without changing their terrain authority.
+	for neighbour_offset in [Vector2i.DOWN, Vector2i.RIGHT]:
+		var neighbour_chunk: Vector2i = chunk_coord + neighbour_offset
+		if _loaded_chunks.has(neighbour_chunk):
+			_refresh_terrain_tiles_for_loaded_chunk(neighbour_chunk)
+
+func _refresh_terrain_variant_tiles_near_cell(cell: Vector2i) -> void:
+	## The edited cell and its east/south neighbours are the only loaded cells
+	## whose north/west edge variant can change from this cell's terrain data.
+	for affected_cell in [cell, cell + Vector2i.RIGHT, cell + Vector2i.DOWN]:
+		if not is_cell_loaded(affected_cell):
+			continue
+		var chunk_coord: Vector2i = _cell_to_chunk(affected_cell)
+		var tile_lookup: Dictionary = _loaded_chunks[chunk_coord].get("tile_lookup", {})
+		if tile_lookup.has(affected_cell):
+			_write_terrain_visual_tile(tile_lookup[affected_cell] as Dictionary)
+
+func _write_terrain_visual_tile(tile_info: Dictionary) -> void:
+	var cell: Vector2i = tile_info.get("cell", Vector2i.ZERO)
+	var variant_key: String = _get_elevation_edge_variant_key_for_cell(cell)
+	var terrain_name: String = String(tile_info.get("terrain", ""))
+	var flat_atlas_coords: Vector2i = tile_info.get("atlas_coords", TerrainConfigRef.INVALID_ATLAS_COORDS)
+	var visual_atlas_coords: Vector2i = TerrainConfigRef.get_visual_atlas_coords(terrain_name, variant_key, flat_atlas_coords)
+	terrain_layer.set_cell(cell, int(tile_info.get("source_id", -1)), visual_atlas_coords)
+
+func _resolve_surface_projected_tile_info(base_tile_info: Dictionary) -> Dictionary:
+	var cell: Vector2i = base_tile_info.get("cell", Vector2i.ZERO)
+	var mined_tile_info: Dictionary = _build_mined_terrain_tile_info(cell, SURFACE_WORLD_SPACE_ID)
+	if not mined_tile_info.is_empty():
+		return mined_tile_info
+	return _manual_tile_overrides.get(cell, base_tile_info).duplicate()
+
+func _build_mined_terrain_tile_info(cell: Vector2i, world_space_id: String = SURFACE_WORLD_SPACE_ID) -> Dictionary:
+	if _world_state == null or world_space_id != SURFACE_WORLD_SPACE_ID:
+		return {}
+	if not _world_state.has_mined_terrain_delta(cell, world_space_id):
+		return {}
+	return _build_tile_info_for_mined_delta(_world_state.get_mined_terrain_delta(cell, world_space_id))
+
+func _build_tile_info_for_mined_delta(delta: Dictionary) -> Dictionary:
+	var cell: Vector2i = delta.get("cell", Vector2i.ZERO)
+	var terrain_name: String = String(delta.get("to_terrain", "STONE"))
+	if not TerrainConfigRef.has_terrain(terrain_name):
+		return {}
+	var tile_info: Dictionary = _world_generator.build_tile_info_for_terrain(cell, terrain_name)
+	return tile_info.duplicate()
+
+func _get_elevation_edge_variant_key_for_cell(cell: Vector2i) -> String:
+	var elevation: int = _get_effective_elevation_for_rim(cell)
+	if elevation <= 0:
+		return ElevationEdgeVariantResolverRef.VARIANT_FLAT
+	var mask: int = 0
+	if elevation > _get_effective_elevation_for_rim(cell + Vector2i.UP):
+		mask |= ElevationEdgeVariantResolverRef.MASK_NORTH
+	if elevation > _get_effective_elevation_for_rim(cell + Vector2i.LEFT):
+		mask |= ElevationEdgeVariantResolverRef.MASK_WEST
+	return ElevationEdgeVariantResolverRef.get_variant_key(mask)
+
 func _build_elevation_render_infos_for_chunk(chunk_coord: Vector2i) -> Array[Dictionary]:
 	var render_infos: Array[Dictionary] = []
 	if not _loaded_chunks.has(chunk_coord):
@@ -679,22 +1260,18 @@ func _build_elevation_render_infos_for_chunk(chunk_coord: Vector2i) -> Array[Dic
 func _refresh_cliff_edge_rims() -> void:
 	## Explicit full rebuild path; streaming uses boundary-aware cell updates below.
 	if shader_cliff_rims_enabled:
+		_clear_cliff_face_mesh_renderers()
 		_refresh_shader_cliff_rims()
 		return
-	if _cliff_edge_rim_visual == null or not is_instance_valid(_cliff_edge_rim_visual):
+	if not enable_cliff_face_overlay:
+		_clear_cliff_face_mesh_renderers()
 		return
-	var segments_by_chunk: Dictionary = {}
+	if _chunk_boundary_mesh_root == null or not is_instance_valid(_chunk_boundary_mesh_root):
+		return
+	_clear_cliff_face_mesh_renderers()
 	for chunk_coord_value: Variant in _loaded_chunks.keys():
 		var chunk_coord: Vector2i = chunk_coord_value
-		segments_by_chunk[chunk_coord] = _build_cliff_edge_rim_segments_for_chunk(chunk_coord)
-	_cliff_edge_rim_visual.call(
-		"configure",
-		segments_by_chunk,
-		cliff_rim_color,
-		cliff_rim_alpha,
-		cliff_rim_width,
-		cliff_rim_vertical_offset
-	)
+		_configure_chunk_boundary_mesh_renderer(chunk_coord, _build_cliff_edge_rim_segments_for_chunk(chunk_coord))
 
 func _refresh_shader_cliff_rims() -> void:
 	## Explicit global texture rebuild for restore/import/debug paths.
@@ -703,7 +1280,7 @@ func _refresh_shader_cliff_rims() -> void:
 	_shader_cliff_rim_visual.call("clear")
 	for chunk_coord_value: Variant in _loaded_chunks:
 		var chunk_coord: Vector2i = chunk_coord_value
-		_shader_cliff_rim_visual.call("update_chunk", chunk_coord, _build_shader_elevations_for_chunk(chunk_coord))
+		_shader_cliff_rim_visual.call("update_chunk", chunk_coord, _build_shader_elevations_for_chunk(chunk_coord), _get_shader_loaded_cells_for_chunk(chunk_coord))
 	_update_shader_cliff_rim_bounds()
 
 func _refresh_shader_cliff_rim_chunk(chunk_coord: Vector2i) -> Dictionary:
@@ -713,7 +1290,7 @@ func _refresh_shader_cliff_rim_chunk(chunk_coord: Vector2i) -> Dictionary:
 	if not _loaded_chunks.has(chunk_coord):
 		_shader_cliff_rim_visual.call("remove_chunk", chunk_coord)
 	else:
-		_shader_cliff_rim_visual.call("update_chunk", chunk_coord, _build_shader_elevations_for_chunk(chunk_coord))
+		_shader_cliff_rim_visual.call("update_chunk", chunk_coord, _build_shader_elevations_for_chunk(chunk_coord), _get_shader_loaded_cells_for_chunk(chunk_coord))
 	var texture_end_usec: int = Time.get_ticks_usec() if chunk_profile_debug else 0
 	_update_shader_cliff_rim_bounds()
 	var overlay_end_usec: int = Time.get_ticks_usec() if chunk_profile_debug else 0
@@ -728,15 +1305,38 @@ func _refresh_shader_cliff_rim_cell(cell: Vector2i) -> void:
 	_shader_cliff_rim_visual.call("update_cell", _cell_to_chunk(cell), cell, get_cell_elevation(cell))
 
 func _build_shader_elevations_for_chunk(chunk_coord: Vector2i) -> Dictionary:
+	## Include the four-neighbour sampling halo so streamed edges do not decode as elevation zero.
 	var elevations_by_cell: Dictionary = {}
 	if not _loaded_chunks.has(chunk_coord):
 		return elevations_by_cell
-	var tile_lookup: Dictionary = _loaded_chunks[chunk_coord].get("tile_lookup", {})
-	for tile_info_value: Variant in tile_lookup.values():
-		var tile_info: Dictionary = tile_info_value as Dictionary
-		var cell: Vector2i = tile_info.get("cell", Vector2i.ZERO)
-		elevations_by_cell[cell] = int(tile_info.get("elevation", 0))
+	var origin: Vector2i = chunk_coord * WorldGenerator.CHUNK_SIZE
+	for y in range(origin.y - 1, origin.y + WorldGenerator.CHUNK_SIZE + 1):
+		for x in range(origin.x - 1, origin.x + WorldGenerator.CHUNK_SIZE + 1):
+			var cell := Vector2i(x, y)
+			elevations_by_cell[cell] = _get_effective_elevation_for_rim(cell)
 	return elevations_by_cell
+
+func _get_shader_loaded_cells_for_chunk(chunk_coord: Vector2i) -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	if not _loaded_chunks.has(chunk_coord):
+		return cells
+	for cell_value: Variant in (_loaded_chunks[chunk_coord].get("tile_lookup", {}) as Dictionary).keys():
+		cells.append(cell_value as Vector2i)
+	return cells
+
+func _refresh_shader_halos_after_unload(unloaded_chunks: Array[Vector2i]) -> void:
+	var affected_loaded_chunks: Dictionary = {}
+	for unloaded_chunk: Vector2i in unloaded_chunks:
+		for y_offset in range(-1, 2):
+			for x_offset in range(-1, 2):
+				if x_offset == 0 and y_offset == 0:
+					continue
+				var neighbour_chunk: Vector2i = unloaded_chunk + Vector2i(x_offset, y_offset)
+				if _loaded_chunks.has(neighbour_chunk):
+					affected_loaded_chunks[neighbour_chunk] = true
+	for chunk_coord_value: Variant in affected_loaded_chunks.keys():
+		var chunk_coord: Vector2i = chunk_coord_value
+		_shader_cliff_rim_visual.call("update_chunk", chunk_coord, _build_shader_elevations_for_chunk(chunk_coord), _get_shader_loaded_cells_for_chunk(chunk_coord))
 
 func _update_shader_cliff_rim_bounds() -> void:
 	if _shader_cliff_rim_visual == null or not is_instance_valid(_shader_cliff_rim_visual) or _loaded_chunks.is_empty():
@@ -770,20 +1370,15 @@ func _update_shader_cliff_rim_bounds() -> void:
 
 func _refresh_cliff_edge_rims_for_loaded_chunk(chunk_coord: Vector2i) -> void:
 	## Build the new chunk in full, then touch only adjacent strips in existing neighbours.
-	if _cliff_edge_rim_visual == null or not is_instance_valid(_cliff_edge_rim_visual):
+	if not enable_cliff_face_overlay:
+		_remove_cliff_face_mesh_renderer(chunk_coord)
+		return
+	if _chunk_boundary_mesh_root == null or not is_instance_valid(_chunk_boundary_mesh_root):
 		return
 	if not _loaded_chunks.has(chunk_coord):
-		_cliff_edge_rim_visual.call("remove_chunk", chunk_coord)
+		_remove_cliff_face_mesh_renderer(chunk_coord)
 		return
-	_cliff_edge_rim_visual.call(
-		"configure_chunk",
-		chunk_coord,
-		_build_cliff_edge_rim_segments_for_chunk(chunk_coord),
-		cliff_rim_color,
-		cliff_rim_alpha,
-		cliff_rim_width,
-		cliff_rim_vertical_offset
-	)
+	_configure_chunk_boundary_mesh_renderer(chunk_coord, _build_cliff_edge_rim_segments_for_chunk(chunk_coord))
 	var neighbour_boundary_cells: Array[Vector2i] = []
 	for neighbour_offset_value: Variant in CLIFF_RIM_NEIGHBOURS.values():
 		var neighbour_offset: Vector2i = neighbour_offset_value
@@ -794,11 +1389,15 @@ func _refresh_cliff_edge_rims_for_loaded_chunk(chunk_coord: Vector2i) -> void:
 	_refresh_cliff_edge_rim_cells(neighbour_boundary_cells)
 
 func _refresh_cliff_edge_rims_for_unloaded_chunks(chunk_coords: Array[Vector2i]) -> void:
-	if _cliff_edge_rim_visual == null or not is_instance_valid(_cliff_edge_rim_visual):
+	if not enable_cliff_face_overlay:
+		for chunk_coord: Vector2i in chunk_coords:
+			_remove_cliff_face_mesh_renderer(chunk_coord)
+		return
+	if _chunk_boundary_mesh_root == null or not is_instance_valid(_chunk_boundary_mesh_root):
 		return
 	var neighbour_boundary_cells: Array[Vector2i] = []
 	for chunk_coord: Vector2i in chunk_coords:
-		_cliff_edge_rim_visual.call("remove_chunk", chunk_coord)
+		_remove_cliff_face_mesh_renderer(chunk_coord)
 		for neighbour_offset_value: Variant in CLIFF_RIM_NEIGHBOURS.values():
 			var neighbour_offset: Vector2i = neighbour_offset_value
 			var neighbour_chunk: Vector2i = chunk_coord + neighbour_offset
@@ -809,7 +1408,9 @@ func _refresh_cliff_edge_rims_for_unloaded_chunks(chunk_coords: Array[Vector2i])
 
 func _refresh_cliff_edge_rim_cells(cells: Array[Vector2i]) -> void:
 	## Cell ownership makes replacement idempotent and prevents overlapping duplicate segments.
-	if _cliff_edge_rim_visual == null or not is_instance_valid(_cliff_edge_rim_visual):
+	if not enable_cliff_face_overlay:
+		return
+	if _chunk_boundary_mesh_root == null or not is_instance_valid(_chunk_boundary_mesh_root):
 		return
 	var unique_cells: Dictionary = {}
 	for cell: Vector2i in cells:
@@ -826,15 +1427,46 @@ func _refresh_cliff_edge_rim_cells(cells: Array[Vector2i]) -> void:
 		var chunk_coord: Vector2i = chunk_coord_value
 		var chunk_cells: Array[Vector2i] = []
 		chunk_cells.assign(cells_by_chunk[chunk_coord])
-		_cliff_edge_rim_visual.call(
-			"configure_cells",
-			chunk_coord,
-			_build_cliff_edge_rim_segments_for_cells(chunk_cells),
-			cliff_rim_color,
-			cliff_rim_alpha,
-			cliff_rim_width,
-			cliff_rim_vertical_offset
-		)
+		_configure_chunk_boundary_mesh_renderer_cells(chunk_coord, _build_cliff_edge_rim_segments_for_cells(chunk_cells))
+
+func _configure_chunk_boundary_mesh_renderer(chunk_coord: Vector2i, segments_by_cell: Dictionary) -> void:
+	if _chunk_boundary_mesh_root == null or not is_instance_valid(_chunk_boundary_mesh_root):
+		return
+	var renderer: ChunkBoundaryMeshRenderer = _get_or_create_chunk_boundary_mesh_renderer(chunk_coord)
+	renderer.configure(chunk_coord, segments_by_cell, cliff_rim_color, cliff_rim_alpha, cliff_rim_width, cliff_rim_vertical_offset)
+
+func _configure_chunk_boundary_mesh_renderer_cells(chunk_coord: Vector2i, segments_by_cell: Dictionary) -> void:
+	if _chunk_boundary_mesh_root == null or not is_instance_valid(_chunk_boundary_mesh_root):
+		return
+	var renderer: ChunkBoundaryMeshRenderer = _get_or_create_chunk_boundary_mesh_renderer(chunk_coord)
+	renderer.configure_cells(segments_by_cell, cliff_rim_color, cliff_rim_alpha, cliff_rim_width, cliff_rim_vertical_offset)
+
+func _get_or_create_chunk_boundary_mesh_renderer(chunk_coord: Vector2i) -> ChunkBoundaryMeshRenderer:
+	if _chunk_boundary_mesh_renderers.has(chunk_coord):
+		var existing: ChunkBoundaryMeshRenderer = _chunk_boundary_mesh_renderers[chunk_coord] as ChunkBoundaryMeshRenderer
+		if existing != null and is_instance_valid(existing):
+			return existing
+	var renderer: ChunkBoundaryMeshRenderer = ChunkBoundaryMeshRendererScript.new() as ChunkBoundaryMeshRenderer
+	renderer.name = "ChunkBoundaryMesh_%d_%d" % [chunk_coord.x, chunk_coord.y]
+	_chunk_boundary_mesh_renderers[chunk_coord] = renderer
+	_chunk_boundary_mesh_root.add_child(renderer)
+	return renderer
+
+func _remove_cliff_face_mesh_renderer(chunk_coord: Vector2i) -> void:
+	if not _chunk_boundary_mesh_renderers.has(chunk_coord):
+		return
+	var renderer: Node = _chunk_boundary_mesh_renderers[chunk_coord] as Node
+	_chunk_boundary_mesh_renderers.erase(chunk_coord)
+	if renderer == null or not is_instance_valid(renderer):
+		return
+	renderer.queue_free()
+
+func _clear_cliff_face_mesh_renderers() -> void:
+	for renderer_value: Variant in _chunk_boundary_mesh_renderers.values():
+		var renderer: Node = renderer_value as Node
+		if renderer != null and is_instance_valid(renderer):
+			renderer.queue_free()
+	_chunk_boundary_mesh_renderers.clear()
 
 func _build_cliff_edge_rim_segments_for_chunk(chunk_coord: Vector2i) -> Dictionary:
 	if not _loaded_chunks.has(chunk_coord):
@@ -847,7 +1479,6 @@ func _build_cliff_edge_rim_segments_for_chunk(chunk_coord: Vector2i) -> Dictiona
 
 func _build_cliff_edge_rim_segments_for_cells(cells: Array[Vector2i]) -> Dictionary:
 	var segments_by_cell: Dictionary = {}
-	var emitted_segments: Dictionary = {}
 	for cell: Vector2i in cells:
 		if not is_cell_loaded(cell):
 			continue
@@ -855,18 +1486,21 @@ func _build_cliff_edge_rim_segments_for_cells(cells: Array[Vector2i]) -> Diction
 		var top_center: Vector2 = CellRenderInfoRef.get_visible_top_center(terrain_layer.map_to_local(cell), elevation)
 		var segments_by_direction: Dictionary = {}
 		for direction_name: String in CLIFF_RIM_NEIGHBOURS:
+			if not _is_cliff_rim_direction_visible(direction_name):
+				continue
 			var neighbour_offset: Vector2i = CLIFF_RIM_NEIGHBOURS[direction_name]
 			var neighbour_elevation: int = _get_effective_elevation_for_rim(cell + neighbour_offset)
 			if elevation <= neighbour_elevation:
 				continue
-			var segment: PackedVector2Array = _build_cliff_rim_segment(top_center, direction_name)
-			var segment_key := Vector4(segment[0].x, segment[0].y, segment[1].x, segment[1].y)
-			if emitted_segments.has(segment_key):
-				continue
-			emitted_segments[segment_key] = true
-			segments_by_direction[direction_name] = segment
+			segments_by_direction[direction_name] = _build_cliff_face_polygon(top_center, direction_name, elevation - neighbour_elevation)
 		segments_by_cell[cell] = segments_by_direction
 	return segments_by_cell
+
+func _is_cliff_rim_direction_visible(direction_name: String) -> bool:
+	## Conservative fixed-camera helper: filled faces are only readable on the
+	## front-facing isometric edges. North/west drops need real cliff assets
+	## before they can be drawn without false wall bands.
+	return bool(CLIFF_RIM_VISIBLE_DIRECTIONS.get(direction_name, false))
 
 func _get_effective_elevation_for_rim(cell: Vector2i) -> int:
 	var chunk_coord: Vector2i = _cell_to_chunk(cell)
@@ -874,6 +1508,12 @@ func _get_effective_elevation_for_rim(cell: Vector2i) -> int:
 		var tile_lookup: Dictionary = _loaded_chunks[chunk_coord].get("tile_lookup", {})
 		if tile_lookup.has(cell):
 			return int((tile_lookup[cell] as Dictionary).get("elevation", 0))
+	var active_interior: Dictionary = _get_interior_for_world_space(_active_world_space_id)
+	if not active_interior.is_empty():
+		return int(InteriorTerrainSourceRef.get_tile_info(active_interior, cell).get("elevation", 0))
+	var mined_tile_info: Dictionary = _build_mined_terrain_tile_info(cell, SURFACE_WORLD_SPACE_ID)
+	if not mined_tile_info.is_empty():
+		return int(mined_tile_info.get("elevation", 0))
 	return int(_manual_tile_overrides.get(cell, _world_generator.get_tile_info(cell)).get("elevation", 0))
 
 func _get_chunk_boundary_cells(chunk_coord: Vector2i, boundary_direction: Vector2i) -> Array[Vector2i]:
@@ -908,10 +1548,25 @@ func _build_cliff_rim_segment(top_center: Vector2, direction_name: String) -> Pa
 	push_error("Unsupported cliff rim direction: %s" % direction_name)
 	return PackedVector2Array()
 
+func _build_cliff_face_polygon(top_center: Vector2, direction_name: String, elevation_delta: int) -> PackedVector2Array:
+	## Presentation-only vertical face: the top edge is taken from the raised cell,
+	## and the lower edge is projected down by the exact elevation delta.
+	var top_edge: PackedVector2Array = _build_cliff_rim_segment(top_center, direction_name)
+	if top_edge.size() != 2:
+		return PackedVector2Array()
+	var face_drop: Vector2 = -CellRenderInfoRef.BLOCK_LAYER_OFFSET * maxi(elevation_delta, 1)
+	return PackedVector2Array([
+		top_edge[0],
+		top_edge[1],
+		top_edge[1] + face_drop,
+		top_edge[0] + face_drop,
+	])
+
 func _refresh_terrain_visuals_near_cell(cell: Vector2i) -> void:
 	var chunk_coord: Vector2i = _cell_to_chunk(cell)
 	if _loaded_chunks.has(chunk_coord):
 		_refresh_elevation_stack_visual_chunks([chunk_coord])
+		_refresh_terrain_variant_tiles_near_cell(cell)
 		if shader_cliff_rims_enabled:
 			_refresh_shader_cliff_rim_cell(cell)
 		else:
@@ -934,7 +1589,7 @@ func _remove_debug_elevation_markers_for_chunk(chunk_coord: Vector2i) -> void:
 func _spawn_construction_visuals_for_chunk(chunk_coord: Vector2i) -> void:
 	if _world_state == null or not _loaded_chunks.has(chunk_coord):
 		return
-	for site: Dictionary in _world_state.get_construction_sites():
+	for site: Dictionary in _world_state.get_construction_sites(_active_world_space_id):
 		var origin_cell: Vector2i = site.get("origin_cell", Vector2i.ZERO)
 		if _cell_to_chunk(origin_cell) == chunk_coord:
 			_spawn_construction_visual(site, chunk_coord)
@@ -942,7 +1597,7 @@ func _spawn_construction_visuals_for_chunk(chunk_coord: Vector2i) -> void:
 func _spawn_stockpile_zone_visuals_for_chunk(chunk_coord: Vector2i) -> void:
 	if _world_state == null or not _loaded_chunks.has(chunk_coord):
 		return
-	for zone: Dictionary in _world_state.get_stockpile_zones():
+	for zone: Dictionary in _world_state.get_stockpile_zones(_active_world_space_id):
 		if not bool(zone.get("enabled", true)):
 			continue
 		for cell: Vector2i in zone.get("cells", []):
@@ -959,15 +1614,15 @@ func _spawn_stockpile_zone_visual(zone_id: String, cell: Vector2i, chunk_coord: 
 	visual.name = "StockpileZone_%s_%d_%d" % [zone_id, cell.x, cell.y]
 	visual.set_meta("zone_id", zone_id)
 	visual.set_meta("cell", cell)
-	visual.position = terrain_layer.map_to_local(cell)
 	var x_step: Vector2 = terrain_layer.map_to_local(cell + Vector2i.RIGHT) - terrain_layer.map_to_local(cell)
 	var y_step: Vector2 = terrain_layer.map_to_local(cell + Vector2i.DOWN) - terrain_layer.map_to_local(cell)
 	visual.configure(x_step, y_step)
 	stockpile_zone_root.add_child(visual)
+	visual.global_position = get_cell_visual_world_position(cell)
 	_loaded_chunks[chunk_coord]["stockpile_zone_nodes"].append(visual)
 
 func _on_stockpile_zone_added(zone: Dictionary) -> void:
-	if not bool(zone.get("enabled", true)):
+	if not bool(zone.get("enabled", true)) or String(zone.get("world_space_id", SURFACE_WORLD_SPACE_ID)) != _active_world_space_id:
 		return
 	var zone_id: String = String(zone.get("zone_id", ""))
 	for cell: Vector2i in zone.get("cells", []):
@@ -1001,7 +1656,7 @@ func _remove_stockpile_zone_visuals_from_chunk(chunk_coord: Vector2i, zone_id: S
 func _spawn_ground_item_visuals_for_chunk(chunk_coord: Vector2i) -> void:
 	if _world_state == null or not _loaded_chunks.has(chunk_coord):
 		return
-	for item: Dictionary in _world_state.get_ground_items():
+	for item: Dictionary in _world_state.get_ground_items(_active_world_space_id):
 		if bool(item.get("enabled", true)) and _cell_to_chunk(item.get("cell", Vector2i.ZERO)) == chunk_coord:
 			_spawn_ground_item_visual(item, chunk_coord)
 
@@ -1016,13 +1671,13 @@ func _spawn_ground_item_visual(item: Dictionary, chunk_coord: Vector2i) -> void:
 	var cell: Vector2i = item.get("cell", Vector2i.ZERO)
 	visual.name = "GroundItem_%s" % item_id
 	visual.set_meta("item_id", item_id)
-	visual.position = terrain_layer.map_to_local(cell) + Vector2(0, -5)
-	visual.call("configure", String(item.get("resource_type", "")), int(item.get("amount", 0)))
+	visual.call("configure", String(item.get("resource_type", "")), int(item.get("amount", 0)), show_ground_item_amount_labels_debug)
 	ground_item_root.add_child(visual)
+	visual.global_position = get_cell_visual_world_position(cell)
 	_loaded_chunks[chunk_coord]["ground_item_nodes"].append(visual)
 
 func _on_ground_item_added(item: Dictionary) -> void:
-	if not bool(item.get("enabled", true)):
+	if not bool(item.get("enabled", true)) or String(item.get("world_space_id", SURFACE_WORLD_SPACE_ID)) != _active_world_space_id:
 		return
 	var chunk_coord: Vector2i = _cell_to_chunk(item.get("cell", Vector2i.ZERO))
 	if _loaded_chunks.has(chunk_coord):
@@ -1059,18 +1714,22 @@ func _spawn_construction_visual(site: Dictionary, chunk_coord: Vector2i) -> void
 	var building_id: String = String(site.get("building_id", "building"))
 	visual.name = "%s_%s_%s" % ["Completed" if completed else "ConstructionSite", building_id.capitalize(), String(site.get("site_id", "unknown"))]
 	visual.set_meta("site_id", String(site.get("site_id", "")))
-	visual.position = terrain_layer.map_to_local(site.get("origin_cell", Vector2i.ZERO)) + Vector2(0, -4)
 	_configure_construction_visual(visual, site)
 	construction_root.add_child(visual)
+	visual.global_position = get_cell_visual_world_position(site.get("origin_cell", Vector2i.ZERO))
 	_loaded_chunks[chunk_coord]["construction_nodes"].append(visual)
 
 func _on_construction_site_added(site: Dictionary) -> void:
+	if String(site.get("world_space_id", SURFACE_WORLD_SPACE_ID)) != _active_world_space_id:
+		return
 	var origin_cell: Vector2i = site.get("origin_cell", Vector2i.ZERO)
 	var chunk_coord: Vector2i = _cell_to_chunk(origin_cell)
 	if _loaded_chunks.has(chunk_coord):
 		_spawn_construction_visual(site, chunk_coord)
 
 func _on_construction_site_changed(site: Dictionary) -> void:
+	if String(site.get("world_space_id", SURFACE_WORLD_SPACE_ID)) != _active_world_space_id:
+		return
 	var origin_cell: Vector2i = site.get("origin_cell", Vector2i.ZERO)
 	var chunk_coord: Vector2i = _cell_to_chunk(origin_cell)
 	if not _loaded_chunks.has(chunk_coord):
@@ -1086,6 +1745,8 @@ func _on_construction_site_changed(site: Dictionary) -> void:
 	_spawn_construction_visual(site, chunk_coord)
 
 func _on_construction_site_cancelled(site_id: String, site: Dictionary) -> void:
+	if String(site.get("world_space_id", SURFACE_WORLD_SPACE_ID)) != _active_world_space_id:
+		return
 	var origin_cell: Vector2i = site.get("origin_cell", Vector2i.ZERO)
 	var chunk_coord: Vector2i = _cell_to_chunk(origin_cell)
 	if not _loaded_chunks.has(chunk_coord):
@@ -1110,7 +1771,7 @@ func _configure_construction_visual(visual: Node, site: Dictionary) -> void:
 	var warmth_radius: float = float(definition.get("warmth_radius", 0.0)) if completed else 0.0
 	var shelter_radius: float = float(definition.get("shelter_radius", 0.0)) if completed else 0.0
 	var shelter_capacity: int = int(definition.get("shelter_capacity", 0)) if completed else 0
-	var show_light_glow: bool = completed and _world_state != null and _world_state.is_night()
+	var show_light_glow: bool = draw_building_effect_radii_debug and completed and _world_state != null and _world_state.is_night()
 	var visual_metadata: Dictionary = BuildingDefinitionRef.get_visual_metadata(building_id)
 	visual.configure_building_site(
 		building_id,
@@ -1125,10 +1786,18 @@ func _configure_construction_visual(visual: Node, site: Dictionary) -> void:
 		String(visual_metadata.get("completed_visual_id", "generic_placeholder")),
 		String(visual_metadata.get("construction_scene_path", "")),
 		String(visual_metadata.get("completed_scene_path", "")),
-		visual_metadata.get("placeholder_palette", {})
+		visual_metadata.get("placeholder_palette", {}),
+		draw_building_effect_radii_debug
 	)
 
 func _on_building_effect_day_phase_changed(_is_daytime: bool) -> void:
+	_day_phase_signal_count += 1
+	_queue_lighting_projection_refresh()
+	if draw_building_effect_radii_debug:
+		_refresh_construction_effect_visuals()
+
+
+func _refresh_construction_effect_visuals() -> void:
 	if _world_state == null:
 		return
 	for chunk_coord: Variant in _loaded_chunks.keys():
@@ -1139,6 +1808,97 @@ func _on_building_effect_day_phase_changed(_is_daytime: bool) -> void:
 			var site: Dictionary = _world_state.get_construction_site(String(node.get_meta("site_id", "")))
 			if not site.is_empty():
 				_configure_construction_visual(node, site)
+
+func _on_lighting_changed(world_space_id: String) -> void:
+	if world_space_id == _active_world_space_id:
+		_lighting_signal_count += 1
+		if draw_per_cell_light_debug or draw_light_source_glows_experimental:
+			_queue_lighting_projection_refresh()
+
+
+func _queue_lighting_projection_refresh() -> void:
+	## Signals can arrive in bursts during construction/import; presentation needs only the final authoritative state.
+	if _lighting_refresh_queued:
+		return
+	_lighting_refresh_queued = true
+	call_deferred("_refresh_queued_lighting_projection")
+
+
+func _refresh_queued_lighting_projection() -> void:
+	_lighting_refresh_queued = false
+	_refresh_lighting_projection()
+
+func _refresh_lighting_projection() -> void:
+	if _lighting_overlay == null or not is_instance_valid(_lighting_overlay):
+		return
+	var loaded_cell_bounds := _get_active_loaded_cell_bounds()
+	var debug_cells: Array[Vector2i] = []
+	if draw_per_cell_light_debug:
+		debug_cells.assign(_get_active_loaded_cells())
+	_lighting_overlay.call("configure", terrain_layer, _world_state, _active_world_space_id, loaded_cell_bounds, debug_cells, draw_per_cell_light_debug, draw_light_source_glows_experimental, lighting_profile_debug, get_cell_visual_world_position)
+
+
+func _get_active_loaded_cell_bounds() -> Rect2i:
+	## Normal ambient rendering only needs the loaded rectangle, not a cell-sized light field.
+	var has_bounds := false
+	var minimum := Vector2i.ZERO
+	var maximum := Vector2i.ZERO
+	var chunk_size := Vector2i(WorldGenerator.CHUNK_SIZE, WorldGenerator.CHUNK_SIZE)
+	for chunk_coord_value: Variant in _loaded_chunks.keys():
+		var chunk_coord: Vector2i = chunk_coord_value
+		var chunk_data: Dictionary = _loaded_chunks[chunk_coord]
+		if String(chunk_data.get("world_space_id", "")) != _active_world_space_id:
+			continue
+		var origin := chunk_coord * WorldGenerator.CHUNK_SIZE
+		var chunk_end := origin + chunk_size
+		if not has_bounds:
+			minimum = origin
+			maximum = chunk_end
+			has_bounds = true
+			continue
+		minimum = Vector2i(mini(minimum.x, origin.x), mini(minimum.y, origin.y))
+		maximum = Vector2i(maxi(maximum.x, chunk_end.x), maxi(maximum.y, chunk_end.y))
+	return Rect2i(minimum, maximum - minimum) if has_bounds else Rect2i()
+
+
+func _get_active_loaded_cells() -> Array[Vector2i]:
+	## Per-cell collection remains isolated to the explicit diagnostic path.
+	var cells: Array[Vector2i] = []
+	for chunk_data_value: Variant in _loaded_chunks.values():
+		var chunk_data: Dictionary = chunk_data_value
+		if String(chunk_data.get("world_space_id", "")) != _active_world_space_id:
+			continue
+		for cell_value: Variant in (chunk_data.get("tile_lookup", {}) as Dictionary).keys():
+			cells.append(cell_value as Vector2i)
+	cells.sort_custom(func(first: Vector2i, second: Vector2i) -> bool:
+		return first.x < second.x if first.x != second.x else first.y < second.y
+	)
+	return cells
+
+
+func _get_visible_ground_item_label_count() -> int:
+	var count := 0
+	for chunk_data_value: Variant in _loaded_chunks.values():
+		var chunk_data: Dictionary = chunk_data_value
+		for node: Node in chunk_data.get("ground_item_nodes", []):
+			if is_instance_valid(node) and node.has_method("is_amount_label_visible") and bool(node.call("is_amount_label_visible")):
+				count += 1
+	return count
+
+
+func _report_lighting_profile(frame_delta: float) -> void:
+	if not lighting_profile_debug or _lighting_overlay == null:
+		return
+	_lighting_profile_elapsed += maxf(frame_delta, 0.0)
+	if _lighting_profile_elapsed < lighting_profile_summary_interval:
+		return
+	var stats: Dictionary = _lighting_overlay.call("consume_profile_stats") as Dictionary
+	var ground_item_labels := _get_visible_ground_item_label_count()
+	var colonist_needs_labels := _colonist_manager.get_visible_needs_label_count() if _colonist_manager != null else 0
+	print("LIGHTING_PROFILE seconds=%.2f day_phase_signals=%d lighting_signals=%d redraws=%d rebuilds=%d rebuild_ms=%.3f draws=%d draw_ms=%.3f draw_calls=%d polygons=%d circles=%d cells_drawn=%d light_queries=%d ground_item_labels=%d colonist_needs_labels=%d" % [_lighting_profile_elapsed, _day_phase_signal_count, _lighting_signal_count, int(stats.get("redraw_count", 0)), int(stats.get("rebuild_count", 0)), float(stats.get("rebuild_ms", 0.0)), int(stats.get("draw_count", 0)), float(stats.get("draw_ms", 0.0)), int(stats.get("draw_calls", 0)), int(stats.get("polygons", 0)), int(stats.get("circles", 0)), int(stats.get("cells_drawn", 0)), int(stats.get("light_queries", 0)), ground_item_labels, colonist_needs_labels])
+	_lighting_profile_elapsed = 0.0
+	_lighting_signal_count = 0
+	_day_phase_signal_count = 0
 
 func _on_construction_sites_replaced() -> void:
 	for chunk_coord: Variant in _loaded_chunks.keys():
@@ -1234,6 +1994,16 @@ func _process_pending_resource_spawns() -> void:
 	if chunk_profile_debug:
 		var profile_end_usec := Time.get_ticks_usec()
 		var tree_collision_usec: int = maxi(add_child_usec - ready_total_usec, 0)
+		_record_resource_spawn_profile({
+			"instantiate": instantiate_usec,
+			"node_config": node_config_usec,
+			"procedural_config": procedural_config_usec,
+			"add_child": add_child_usec,
+			"visual_refresh": visual_refresh_usec,
+			"tree_collision": tree_collision_usec,
+			"tracking": tracking_usec,
+			"total": profile_end_usec - profile_start_usec,
+		}, processed_count)
 		print(
 			"RESOURCE_PROFILE count=%d dequeued=%d instantiate_ms=%.3f node_config_ms=%.3f procedural_config_ms=%.3f add_child_ms=%.3f visual_refresh_ms=%.3f tree_collision_ms=%.3f tracking_ms=%.3f total_ms=%.3f pending=%d" % [
 				processed_count,
@@ -1252,6 +2022,48 @@ func _process_pending_resource_spawns() -> void:
 
 func _usec_to_msec(usec: int) -> float:
 	return float(usec) / 1000.0
+
+func _record_chunk_load_profile(stage_usecs: Dictionary) -> void:
+	## Opt-in aggregate profiler for chunk-load hitch audits. It is intentionally
+	## guarded by chunk_profile_debug so normal gameplay does not retain samples
+	## or emit logs.
+	_record_profile_stage_set(_chunk_profile_load_stats, stage_usecs, 1)
+	var count: int = int(_chunk_profile_load_stats.get("_count", 0))
+	if count > 0 and count % chunk_profile_summary_interval == 0:
+		_print_profile_summary("CHUNK_PROFILE_SUMMARY", _chunk_profile_load_stats)
+
+func _record_resource_spawn_profile(stage_usecs: Dictionary, processed_count: int) -> void:
+	if processed_count <= 0:
+		return
+	_record_profile_stage_set(_chunk_profile_resource_stats, stage_usecs, processed_count)
+	var count: int = int(_chunk_profile_resource_stats.get("_count", 0))
+	if count > 0 and count % chunk_profile_summary_interval == 0:
+		_print_profile_summary("RESOURCE_PROFILE_SUMMARY", _chunk_profile_resource_stats)
+
+func _record_profile_stage_set(stats: Dictionary, stage_usecs: Dictionary, sample_count: int) -> void:
+	stats["_count"] = int(stats.get("_count", 0)) + sample_count
+	for stage_name_value: Variant in stage_usecs.keys():
+		var stage_name: String = String(stage_name_value)
+		var usec: int = int(stage_usecs[stage_name_value])
+		var stage_stats: Dictionary = stats.get(stage_name, {"total_usec": 0, "max_usec": 0})
+		stage_stats["total_usec"] = int(stage_stats.get("total_usec", 0)) + usec
+		stage_stats["max_usec"] = maxi(int(stage_stats.get("max_usec", 0)), usec)
+		stats[stage_name] = stage_stats
+
+func _print_profile_summary(label: String, stats: Dictionary) -> void:
+	var count: int = int(stats.get("_count", 0))
+	if count <= 0:
+		return
+	var parts: Array[String] = [label, "samples=%d" % count]
+	for stage_name_value: Variant in stats.keys():
+		var stage_name: String = String(stage_name_value)
+		if stage_name.begins_with("_"):
+			continue
+		var stage_stats: Dictionary = stats[stage_name_value]
+		var average_usec: int = roundi(float(int(stage_stats.get("total_usec", 0))) / float(count))
+		parts.append("%s_avg_ms=%.3f" % [stage_name, _usec_to_msec(average_usec)])
+		parts.append("%s_max_ms=%.3f" % [stage_name, _usec_to_msec(int(stage_stats.get("max_usec", 0)))])
+	print(" ".join(parts))
 
 func get_streaming_lifecycle_debug_snapshot() -> Dictionary:
 	## Bounded, read-only diagnostics. No samples or explored-chunk history are retained.
@@ -1283,12 +2095,17 @@ func get_streaming_lifecycle_debug_snapshot() -> Dictionary:
 			elevation_cells += (cells_value as Dictionary).size()
 	var shader_chunks: Dictionary = _shader_cliff_rim_visual.get("_cells_by_chunk") if _shader_cliff_rim_visual != null else {}
 	var shader_slots: Dictionary = _shader_cliff_rim_visual.get("_slot_owner") if _shader_cliff_rim_visual != null else {}
-	var cpu_chunks: Dictionary = _cliff_edge_rim_visual.get("_segments_by_chunk") if _cliff_edge_rim_visual != null else {}
-	var cpu_segments: int = 0
-	for chunk_value: Variant in cpu_chunks.values():
-		for cell_value: Variant in (chunk_value as Dictionary).values():
-			cpu_segments += (cell_value as Dictionary).size()
-	var stale_visual_chunks: int = _count_stale_cache_chunks(elevation_chunks) + _count_stale_cache_chunks(shader_chunks) + _count_stale_cache_chunks(cpu_chunks)
+	var boundary_mesh_segments: int = 0
+	var boundary_mesh_vertices: int = 0
+	var boundary_mesh_draw_calls: int = 0
+	for renderer_value: Variant in _chunk_boundary_mesh_renderers.values():
+		var renderer: ChunkBoundaryMeshRenderer = renderer_value as ChunkBoundaryMeshRenderer
+		if renderer == null or not is_instance_valid(renderer):
+			continue
+		boundary_mesh_segments += renderer.get_segment_count()
+		boundary_mesh_vertices += renderer.get_vertex_count()
+		boundary_mesh_draw_calls += renderer.get_draw_call_count()
+	var stale_visual_chunks: int = _count_stale_cache_chunks(elevation_chunks) + _count_stale_cache_chunks(shader_chunks) + _count_stale_cache_chunks(_chunk_boundary_mesh_renderers)
 	return {
 		"loaded_chunks": _loaded_chunks.size(),
 		"stale_loaded_chunks": stale_loaded_chunks,
@@ -1305,8 +2122,10 @@ func get_streaming_lifecycle_debug_snapshot() -> Dictionary:
 		"elevation_cells": elevation_cells,
 		"shader_chunks": shader_chunks.size(),
 		"shader_slots": shader_slots.size(),
-		"cpu_rim_chunks": cpu_chunks.size(),
-		"cpu_rim_segments": cpu_segments,
+		"boundary_mesh_chunks": _chunk_boundary_mesh_renderers.size(),
+		"boundary_mesh_segments": boundary_mesh_segments,
+		"boundary_mesh_vertices": boundary_mesh_vertices,
+		"boundary_mesh_draw_calls": boundary_mesh_draw_calls,
 		"stale_visual_chunks": stale_visual_chunks,
 		"manual_overrides": _manual_tile_overrides.size(),
 		"depleted_resource_ids": _depleted_resource_ids.size(),
@@ -1369,6 +2188,22 @@ func get_loaded_resources_in_cell_rect(cell_rect: Rect2i) -> Array[Dictionary]:
 		return String(first.get("resource_id", "")) < String(second.get("resource_id", ""))
 	)
 	return resources
+
+func _get_loaded_resource_snapshot_at_cell(cell: Vector2i, world_space_id: String) -> Dictionary:
+	if world_space_id != SURFACE_WORLD_SPACE_ID:
+		return {}
+	for entry_value: Variant in _resource_index.values():
+		var entry: Dictionary = entry_value
+		var resource: ResourceNode = entry.get("node") as ResourceNode
+		var chunk_coord: Vector2i = entry.get("chunk_coord", Vector2i.ZERO)
+		if resource == null or not is_instance_valid(resource) or not _loaded_chunks.has(chunk_coord):
+			continue
+		if resource.cell != cell:
+			continue
+		var inspection: Dictionary = resource.get_inspection_data()
+		inspection["resource_id"] = resource.resource_id
+		return inspection
+	return {}
 
 func commit_harvest_resource(resource_id: String) -> Dictionary:
 	## Called only by WorldState after all order and stockpile validation succeeds.
@@ -1493,8 +2328,7 @@ func _apply_manual_overrides_to_loaded_chunks() -> void:
 		var chunk_key: Vector2i = chunk_coord
 		var tile_lookup: Dictionary = _loaded_chunks[chunk_key].get("tile_lookup", {})
 		for tile_info: Dictionary in _loaded_chunks[chunk_key].get("tiles", []):
-			var final_tile_info: Dictionary = _manual_tile_overrides.get(tile_info.cell, tile_info)
-			terrain_layer.set_cell(final_tile_info.cell, final_tile_info.source_id, final_tile_info.atlas_coords)
+			var final_tile_info: Dictionary = _resolve_surface_projected_tile_info(tile_info)
 			tile_lookup[final_tile_info.cell] = final_tile_info
 		_loaded_chunks[chunk_key]["tile_lookup"] = tile_lookup
 	_refresh_elevation_visuals()
@@ -1591,14 +2425,18 @@ func _unload_far_chunks(center_chunk: Vector2i) -> void:
 		_loaded_chunks.erase(chunk_coord)
 		chunk_unloaded.emit(chunk_coord)
 	if not to_remove.is_empty():
+		_refresh_connection_markers()
+		_refresh_lighting_projection()
 		var cleanup_end_usec: int = Time.get_ticks_usec() if chunk_profile_debug else 0
 		_refresh_elevation_stack_visual_chunks(to_remove)
+		_refresh_terrain_tiles_for_loaded_chunks()
 		var elevation_end_usec: int = Time.get_ticks_usec() if chunk_profile_debug else 0
 		var texture_end_usec: int = elevation_end_usec
 		var overlay_end_usec: int = elevation_end_usec
 		if shader_cliff_rims_enabled:
 			for chunk_coord: Vector2i in to_remove:
 				_shader_cliff_rim_visual.call("remove_chunk", chunk_coord)
+			_refresh_shader_halos_after_unload(to_remove)
 			texture_end_usec = Time.get_ticks_usec() if chunk_profile_debug else 0
 			_update_shader_cliff_rim_bounds()
 			overlay_end_usec = Time.get_ticks_usec() if chunk_profile_debug else 0
@@ -1608,7 +2446,7 @@ func _unload_far_chunks(center_chunk: Vector2i) -> void:
 		if chunk_profile_debug:
 			var profile_end_usec := Time.get_ticks_usec()
 			print(
-				"CHUNK_PROFILE unload_count=%d cleanup_ms=%.3f elevation_stack_ms=%.3f elevation_texture_ms=%.3f shader_overlay_ms=%.3f rim_fallback_ms=%.3f cliff_rims_ms=%.3f total_ms=%.3f loaded_chunks=%d" % [
+				"CHUNK_PROFILE unload_count=%d cleanup_ms=%.3f elevation_stack_ms=%.3f elevation_texture_ms=%.3f shader_overlay_ms=%.3f boundary_mesh_ms=%.3f cliff_rims_ms=%.3f total_ms=%.3f loaded_chunks=%d" % [
 					to_remove.size(),
 					_usec_to_msec(cleanup_end_usec - profile_start_usec),
 					_usec_to_msec(elevation_end_usec - cleanup_end_usec),

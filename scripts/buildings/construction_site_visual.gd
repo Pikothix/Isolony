@@ -22,11 +22,12 @@ var _warmth_radius: float = 0.0
 var _shelter_radius: float = 0.0
 var _shelter_capacity: int = 0
 var _show_light_glow: bool = false
+var _draw_effect_radii: bool = false
 
 func configure_site(completed: bool = false, light_radius: float = 0.0, warmth_radius: float = 0.0, show_light_glow: bool = false) -> void:
 	configure_building_site("campfire", completed, Vector2i.ONE, light_radius, warmth_radius, 0.0, 0, show_light_glow, "campfire_scaffold", "campfire_placeholder")
 
-func configure_building_site(building_id: String, completed: bool, footprint: Vector2i, light_radius: float = 0.0, warmth_radius: float = 0.0, shelter_radius: float = 0.0, shelter_capacity: int = 0, show_light_glow: bool = false, construction_visual_id: String = "generic_scaffold", completed_visual_id: String = "generic_placeholder", construction_scene_path: String = "", completed_scene_path: String = "", placeholder_palette: Dictionary = {}) -> void:
+func configure_building_site(building_id: String, completed: bool, footprint: Vector2i, light_radius: float = 0.0, warmth_radius: float = 0.0, shelter_radius: float = 0.0, shelter_capacity: int = 0, show_light_glow: bool = false, construction_visual_id: String = "generic_scaffold", completed_visual_id: String = "generic_placeholder", construction_scene_path: String = "", completed_scene_path: String = "", placeholder_palette: Dictionary = {}, draw_effect_radii: bool = false) -> void:
 	_is_preview = false
 	_is_completed = completed
 	_building_id = building_id
@@ -40,7 +41,8 @@ func configure_building_site(building_id: String, completed: bool, footprint: Ve
 	_warmth_radius = maxf(warmth_radius, 0.0) if completed else 0.0
 	_shelter_radius = maxf(shelter_radius, 0.0) if completed else 0.0
 	_shelter_capacity = maxi(shelter_capacity, 0) if completed else 0
-	_show_light_glow = show_light_glow and completed and _light_radius > 0.0
+	_draw_effect_radii = draw_effect_radii and completed
+	_show_light_glow = show_light_glow and _draw_effect_radii and _light_radius > 0.0
 	_sync_external_visual()
 	queue_redraw()
 
@@ -68,6 +70,7 @@ func get_effect_visual_state() -> Dictionary:
 		"shelter_radius": _shelter_radius,
 		"shelter_capacity": _shelter_capacity,
 		"light_glow_visible": _show_light_glow,
+		"effect_radii_visible": _draw_effect_radii,
 	}
 
 func _draw() -> void:
@@ -76,11 +79,11 @@ func _draw() -> void:
 		_draw_footprint(preview_color, preview_color.lightened(0.25), 2.0)
 		return
 	if _is_completed:
-		if _show_light_glow:
+		if _draw_effect_radii and _show_light_glow:
 			_draw_isometric_radius(_light_radius, Color(1.0, 0.72, 0.18, 0.10), Color(1.0, 0.72, 0.18, 0.34))
-		if _warmth_radius > 0.0:
+		if _draw_effect_radii and _warmth_radius > 0.0:
 			_draw_isometric_radius(_warmth_radius, Color(1.0, 0.30, 0.08, 0.045), Color(1.0, 0.34, 0.10, 0.25))
-		if _shelter_radius > 0.0:
+		if _draw_effect_radii and _shelter_radius > 0.0:
 			_draw_isometric_radius(_shelter_radius, Color(0.18, 0.58, 0.92, 0.04), Color(0.30, 0.70, 1.0, 0.28))
 		if _external_visual != null and is_instance_valid(_external_visual):
 			return
@@ -88,6 +91,8 @@ func _draw() -> void:
 			_draw_completed_cabin()
 		elif _completed_visual_id == "storehouse_placeholder":
 			_draw_completed_storehouse()
+		elif _completed_visual_id == "supply_cache_placeholder":
+			_draw_completed_supply_cache()
 		else:
 			_draw_completed_campfire()
 		return
@@ -98,6 +103,8 @@ func _draw() -> void:
 		_draw_cabin_scaffold()
 	elif _construction_visual_id == "storehouse_scaffold":
 		_draw_storehouse_scaffold()
+	elif _construction_visual_id == "supply_cache_scaffold":
+		_draw_supply_cache_scaffold()
 	else:
 		draw_line(Vector2(-9, 2), Vector2(9, -4), _palette_color("scaffold_dark", Color(0.24, 0.12, 0.05)), 4.0)
 		draw_line(Vector2(-9, -4), Vector2(9, 2), _palette_color("scaffold_light", Color(0.31, 0.16, 0.06)), 4.0)
@@ -134,6 +141,16 @@ func _draw_storehouse_scaffold() -> void:
 	for post: Vector2 in [Vector2(-28, 10), Vector2(0, -5), Vector2(28, 10), Vector2(0, 36)]:
 		draw_line(post, post + Vector2(0, -12), _palette_color("scaffold_dark", Color(0.32, 0.18, 0.08)), 3.0)
 	draw_polyline(PackedVector2Array([Vector2(-28, 2), Vector2(0, -12), Vector2(28, 2)]), _palette_color("scaffold_light", Color(0.58, 0.38, 0.16)), 3.0)
+
+func _draw_supply_cache_scaffold() -> void:
+	draw_line(Vector2(-9, 3), Vector2(-9, -10), _palette_color("scaffold_dark", Color(0.25, 0.13, 0.05)), 3.0)
+	draw_line(Vector2(9, 3), Vector2(9, -10), _palette_color("scaffold_dark", Color(0.25, 0.13, 0.05)), 3.0)
+	draw_line(Vector2(-11, -7), Vector2(11, -7), _palette_color("scaffold_light", Color(0.56, 0.34, 0.12)), 3.0)
+
+func _draw_completed_supply_cache() -> void:
+	_draw_footprint(_palette_color("foundation_fill", Color(0.36, 0.25, 0.12, 0.75)), _palette_color("foundation_line", Color(0.66, 0.48, 0.22)), 1.0)
+	draw_colored_polygon(PackedVector2Array([Vector2(-11, 2), Vector2(-11, -10), Vector2(0, -16), Vector2(11, -10), Vector2(11, 2), Vector2(0, 8)]), _palette_color("crate", Color(0.58, 0.38, 0.16)))
+	draw_polyline(PackedVector2Array([Vector2(-11, -10), Vector2(0, -4), Vector2(11, -10)]), _palette_color("crate_line", Color(0.25, 0.14, 0.05)), 2.0)
 
 func _draw_completed_storehouse() -> void:
 	_draw_footprint(_palette_color("foundation_fill", Color(0.31, 0.23, 0.14, 0.86)), _palette_color("foundation_line", Color(0.54, 0.39, 0.20, 0.95)), 1.0)

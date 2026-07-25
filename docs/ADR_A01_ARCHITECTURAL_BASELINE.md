@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Accepted historical decision — superseded as the active project baseline
+
+> Dormant legacy context: this ADR describes the streamed-world prototype. It does not describe the configured windowed-colony runtime. Use `CURRENT_BASELINE.md` and `PROJECT_ARCHITECTURE.md` for current ownership.
 
 ## Date
 

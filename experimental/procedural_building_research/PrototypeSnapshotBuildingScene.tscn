@@ -1,0 +1,77 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://experimental/procedural_building_research/prototype_snapshot_controller.gd" id="1_controller"]
+[ext_resource type="Script" path="res://experimental/procedural_building_research/prototype_snapshot_renderer.gd" id="2_renderer"]
+
+[node name="PrototypeSnapshotBuildingScene" type="Node2D"]
+script = ExtResource("1_controller")
+
+[node name="Background" type="ColorRect" parent="."]
+offset_right = 1152.0
+offset_bottom = 648.0
+color = Color(0.055, 0.067, 0.085, 1)
+mouse_filter = 2
+
+[node name="SnapshotPanel" type="Node2D" parent="."]
+
+[node name="PanelBackdrop" type="Polygon2D" parent="SnapshotPanel"]
+polygon = PackedVector2Array(80, 60, 880, 60, 880, 590, 80, 590)
+color = Color(0.105, 0.125, 0.145, 1)
+
+[node name="PrototypeRenderer" type="Node2D" parent="SnapshotPanel"]
+position = Vector2(480, 180)
+script = ExtResource("2_renderer")
+
+[node name="Title" type="Label" parent="SnapshotPanel"]
+offset_left = 104.0
+offset_top = 78.0
+offset_right = 600.0
+offset_bottom = 108.0
+theme_override_font_sizes/font_size = 20
+text = "LOCATION SNAPSHOT — FULL-CELL BUILDING RESEARCH"
+
+[node name="Controls" type="CanvasLayer" parent="."]
+
+[node name="Panel" type="PanelContainer" parent="Controls"]
+offset_left = 900.0
+offset_top = 60.0
+offset_right = 1132.0
+offset_bottom = 520.0
+
+[node name="Margin" type="MarginContainer" parent="Controls/Panel"]
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 14
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 14
+
+[node name="VBox" type="VBoxContainer" parent="Controls/Panel/Margin"]
+theme_override_constants/separation = 12
+
+[node name="Instructions" type="Label" parent="Controls/Panel/Margin/VBox"]
+text = "Experimental sandbox\nWalls and floors occupy ordinary grid cells."
+autowrap_mode = 2
+
+[node name="WallButton" type="Button" parent="Controls/Panel/Margin/VBox"]
+text = "Wall"
+
+[node name="FillFloorButton" type="Button" parent="Controls/Panel/Margin/VBox"]
+text = "Fill Floor"
+
+[node name="DoorButton" type="Button" parent="Controls/Panel/Margin/VBox"]
+text = "Door"
+
+[node name="WindowButton" type="Button" parent="Controls/Panel/Margin/VBox"]
+text = "Window"
+
+[node name="RemoveButton" type="Button" parent="Controls/Panel/Margin/VBox"]
+text = "Remove"
+
+[node name="ConfirmButton" type="Button" parent="Controls/Panel/Margin/VBox"]
+text = "Confirm Walls"
+
+[node name="CancelButton" type="Button" parent="Controls/Panel/Margin/VBox"]
+text = "Cancel Pending"
+
+[node name="StatusLabel" type="Label" parent="Controls/Panel/Margin/VBox"]
+custom_minimum_size = Vector2(190, 105)
+autowrap_mode = 2

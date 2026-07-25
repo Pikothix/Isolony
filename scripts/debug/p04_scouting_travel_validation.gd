@@ -1,0 +1,35 @@
+extends SceneTree
+
+const StateScript = preload("res://scripts/simulation/windowed_colony_state.gd")
+var failures: Array[String] = []
+var checks := 0
+
+func _initialize() -> void: call_deferred("_run")
+func _run() -> void:
+	var state: WindowedColonyState = StateScript.new(); root.add_child(state); await process_frame; state.set_process(false)
+	_check(bool(state.request_new_game(40404).ok), "new game")
+	_check(bool(state.request_settle_starting_location().ok), "settle home")
+	var id := state.get_colonist_ids()[0]; var home := state.get_location_snapshot(StateScript.LOCATION_ID)
+	_check(Vector2i(home.world_position) == Vector2i.ZERO, "home position is origin")
+	_check(not bool(state.request_start_scouting(id, "invalid").ok), "invalid scout type rejected")
+	_check(bool(state.request_start_scouting(id, "woodland").ok), "scouting begins")
+	_check(id not in state.get_location_snapshot(StateScript.LOCATION_ID).colonist_presence_ids, "scout leaves presence")
+	var scout := state.get_scouting_snapshot(id); state.advance_simulation(float(scout.duration) - 0.1); _check(state.get_location_ids().size() == 1, "scout not completed early")
+	state.request_set_time_scale(0.0); state.advance_simulation(100.0); _check(state.get_location_ids().size() == 1, "pause stops scouting"); state.request_set_time_scale(1.0); state.advance_simulation(0.2)
+	_check(state.get_location_ids().size() == 2, "one discovery created")
+	var remote_id := state.get_location_ids()[1]; var remote := state.get_location_snapshot(remote_id)
+	_check(String(remote.lifecycle_state) == "DISCOVERED" and Vector2i(remote.world_position) != Vector2i.ZERO, "discovery metadata")
+	_check(id in state.get_location_snapshot(StateScript.LOCATION_ID).colonist_presence_ids, "scout returns exactly once")
+	_check(bool(state.request_retain_location(remote_id).ok), "retain discovery")
+	_check(bool(state.request_send_colonist_to_location(id, remote_id).ok), "travel begins")
+	_check(id not in state.get_location_snapshot(StateScript.LOCATION_ID).colonist_presence_ids and String(state.get_colonist_snapshot(id).location_id).is_empty(), "traveller has no location presence")
+	var travel := state.get_travel_snapshot(id); var saved := state.export_save_data(); _check(int(saved.version) == 4, "windowed schema version 4")
+	var restored: WindowedColonyState = StateScript.new(); root.add_child(restored); await process_frame; restored.set_process(false); _check(bool(restored.import_save_data(saved).ok), "active travel round trip")
+	_check(not restored.get_travel_snapshot(id).is_empty(), "travel progress restored")
+	restored.advance_simulation(float(travel.travel_duration)); _check(String(restored.get_colonist_snapshot(id).location_id) == remote_id and id in restored.get_location_snapshot(remote_id).colonist_presence_ids, "arrival commits once")
+	_check(bool(restored.request_return_colonist_home(id).ok), "return home uses travel authority")
+	var back := restored.get_travel_snapshot(id); restored.advance_simulation(float(back.travel_duration)); _check(String(restored.get_colonist_snapshot(id).location_id) == StateScript.LOCATION_ID, "returned home")
+	var invalid := saved.duplicate(true); invalid.active_travel[0].destination_location_id = "missing"; var before := restored.export_save_data(); _check(not bool(restored.import_save_data(invalid).ok) and restored.export_save_data() == before, "invalid travel is atomically rejected")
+	if failures.is_empty(): print("P04_SCOUTING_TRAVEL_VALIDATION: PASS (%d checks)" % checks); quit(0)
+	else: for failure: String in failures: push_error(failure); quit(1)
+func _check(value: bool, label: String) -> void: checks += 1; if not value: failures.append(label)

@@ -17,14 +17,19 @@ const LAST_NAMES: Array[String] = [
 @export_range(1, 12, 1) var colonist_count: int = 3
 @export var chunk_manager_path: NodePath = NodePath("../..")
 @export var colonist_scene: PackedScene
+@export var show_needs_labels_debug: bool = false
 
 @onready var _chunk_manager: ChunkManager = get_node(chunk_manager_path) as ChunkManager
 var _world_state: Node
 var _cleanup_timer: float = 0.0
 var _next_colonist_id: int = 1
 var _initial_population_created: bool = false
+var _applied_show_needs_labels_debug := false
 
 @export_range(0.5, 10.0, 0.5) var reservation_cleanup_interval: float = 2.0
+@export var simulation_profile_debug: bool = false
+@export_range(0.5, 10.0, 0.5) var simulation_profile_summary_interval: float = 1.0
+var _simulation_profile_elapsed := 0.0
 
 ## Purpose: Create, export, replace, and identify the authoritative colonist population.
 ## Responsibility: Own population lifecycle and reciprocal/name-resolved relationships; colonist nodes own individual records.
@@ -36,8 +41,37 @@ func _ready() -> void:
 func set_world_state(world_state: Node) -> void:
 	_world_state = world_state
 
-func _process(delta: float) -> void:
+
+func set_needs_labels_debug_visible(enabled: bool) -> void:
+	## Bulk presentation toggle. Individual colonists retain ownership of their label node.
+	show_needs_labels_debug = enabled
+	_sync_needs_label_debug_visibility()
+
+
+func _sync_needs_label_debug_visibility() -> void:
+	if _applied_show_needs_labels_debug == show_needs_labels_debug:
+		return
+	_applied_show_needs_labels_debug = show_needs_labels_debug
+	for child: Node in get_children():
+		if child is Colonist and not child.is_queued_for_deletion():
+			(child as Colonist).set_needs_label_visible(show_needs_labels_debug)
+
+
+func get_visible_needs_label_count() -> int:
+	var count := 0
+	for child: Node in get_children():
+		if child is Colonist and child.visible and not child.is_queued_for_deletion() and (child as Colonist).is_needs_label_visible():
+			count += 1
+	return count
+
+
+func _process(frame_delta: float) -> void:
+	_sync_needs_label_debug_visibility()
+	_update_simulation_profiling(frame_delta)
 	if _world_state == null:
+		return
+	var delta: float = _world_state.get_simulation_delta(frame_delta)
+	if delta <= 0.0:
 		return
 	_cleanup_timer -= delta
 	if _cleanup_timer > 0.0:
@@ -47,7 +81,37 @@ func _process(delta: float) -> void:
 	_world_state.cleanup_stale_construction_reservations(active_ids)
 	_world_state.cleanup_stale_construction_material_deliveries(active_ids)
 	_world_state.cleanup_stale_harvest_reservations(active_ids)
+	_world_state.cleanup_stale_mining_reservations(active_ids)
 	_world_state.cleanup_stale_haul_reservations(active_ids)
+
+
+func _update_simulation_profiling(frame_delta: float) -> void:
+	for child: Node in get_children():
+		if child is Colonist and not child.is_queued_for_deletion():
+			(child as Colonist).set_process_profiling_enabled(simulation_profile_debug)
+	if not simulation_profile_debug:
+		return
+	_simulation_profile_elapsed += maxf(frame_delta, 0.0)
+	if _simulation_profile_elapsed < simulation_profile_summary_interval:
+		return
+	var total_usec := 0
+	var max_usec := 0
+	var samples := 0
+	var counters: Dictionary = {}
+	for child: Node in get_children():
+		if not child is Colonist or child.is_queued_for_deletion():
+			continue
+		var colonist := child as Colonist
+		var profile: Dictionary = colonist.consume_process_profile()
+		total_usec += int(profile.get("total_usec", 0))
+		max_usec = maxi(max_usec, int(profile.get("max_usec", 0)))
+		samples += int(profile.get("samples", 0))
+		var colonist_counters: Dictionary = colonist.get_job_scheduling_debug_counters()
+		for key: String in colonist_counters:
+			counters[key] = int(counters.get(key, 0)) + int(colonist_counters.get(key, 0))
+		colonist.reset_job_scheduling_debug_counters()
+	print("SIMULATION_PROFILE seconds=%.2f colonist_process_ms=%.3f max_process_ms=%.3f samples=%d job_scans=%d path_queries=%d need_attempts=%d need_paths=%d" % [_simulation_profile_elapsed, float(total_usec) / 1000.0, float(max_usec) / 1000.0, samples, int(counters.get("job_evaluations_attempted", 0)), int(counters.get("path_queries_requested", 0)), int(counters.get("need_seeking_attempted", 0)), int(counters.get("need_path_queries", 0))])
+	_simulation_profile_elapsed = 0.0
 
 func get_active_colonist_ids() -> Array[String]:
 	var active_ids: Array[String] = []
@@ -77,12 +141,27 @@ func get_colonist_at_world_position(world_position: Vector2, selection_radius: f
 		if not child is Colonist or child.is_queued_for_deletion():
 			continue
 		var colonist: Colonist = child as Colonist
+		if colonist.current_world_space_id != _chunk_manager.get_active_world_space_id():
+			continue
 		var visual_center: Vector2 = colonist.global_position + Vector2(0, -8)
 		var distance_squared: float = visual_center.distance_squared_to(world_position)
 		if distance_squared <= closest_distance_squared:
 			closest = colonist
 			closest_distance_squared = distance_squared
 	return closest
+
+func get_first_colonist_in_world_space(world_space_id: String) -> Colonist:
+	for child: Node in get_children():
+		if child is Colonist and not child.is_queued_for_deletion():
+			var colonist: Colonist = child as Colonist
+			if colonist.current_world_space_id == world_space_id:
+				return colonist
+	return null
+
+func refresh_active_world_space_visibility() -> void:
+	for child: Node in get_children():
+		if child is Colonist and not child.is_queued_for_deletion():
+			(child as Colonist).sync_active_world_space_visibility()
 
 func export_colonist_records() -> Array[Dictionary]:
 	var records: Array[Dictionary] = []
@@ -104,7 +183,7 @@ func import_colonist_records(records: Array) -> Dictionary:
 		if colonist_id.is_empty() or seen_ids.has(colonist_id):
 			return _build_import_result(false, "invalid_or_duplicate_colonist_id", 0, 0)
 		var world_space_id: String = String(record.get("world_space_id", ChunkManager.SURFACE_WORLD_SPACE_ID))
-		if world_space_id != ChunkManager.SURFACE_WORLD_SPACE_ID:
+		if not _is_imported_world_space_supported(world_space_id):
 			return _build_import_result(false, "unsupported_world_space_id", 0, 0)
 		seen_ids[colonist_id] = true
 	_clear_population()
@@ -130,6 +209,7 @@ func import_colonist_records(records: Array) -> Dictionary:
 			[],
 			String(record.get("world_space_id", ChunkManager.SURFACE_WORLD_SPACE_ID))
 		)
+		colonist.set_needs_label_visible(show_needs_labels_debug)
 		var import_result: Dictionary = colonist.import_state(record)
 		if not bool(import_result.get("ok", false)):
 			_clear_population()
@@ -142,6 +222,14 @@ func import_colonist_records(records: Array) -> Dictionary:
 	_cleanup_timer = reservation_cleanup_interval
 	population_replaced.emit()
 	return _build_import_result(true, "imported", restored_by_id.size(), skipped_relationships)
+
+func _is_imported_world_space_supported(world_space_id: String) -> bool:
+	## WorldState imports interiors before this preflight, so every accepted identity already has an authority owner.
+	if world_space_id == ChunkManager.SURFACE_WORLD_SPACE_ID:
+		return true
+	if _chunk_manager != null:
+		return _chunk_manager.is_world_space_supported(world_space_id)
+	return _world_state != null and _world_state.has_method("get_interior_for_world_space") and not _world_state.get_interior_for_world_space(world_space_id).is_empty()
 
 func _spawn_initial_colonists() -> void:
 	if colonist_scene == null or _initial_population_created:
@@ -163,6 +251,7 @@ func _spawn_initial_colonists() -> void:
 		colonist.name = runtime_id
 		add_child(colonist)
 		colonist.initialize(_chunk_manager, spawn_cell, _world_state, runtime_id, generated_first_name, generated_last_name, generated_skills, generated_trait_ids)
+		colonist.set_needs_label_visible(show_needs_labels_debug)
 		spawned_colonists.append(colonist)
 	_generate_initial_relationships(spawned_colonists)
 

@@ -106,8 +106,12 @@ func _on_priority_pressed(colonist: Colonist, work_type: String, button: Button)
 
 func _refresh_priority_button(colonist: Colonist, work_type: String, button: Button) -> void:
 	var priority: int = colonist.get_work_priority(work_type)
-	button.text = PRIORITY_DISABLED_TEXT if priority == Colonist.WORK_DISABLED else str(priority)
-	button.modulate = Color(0.72, 0.72, 0.72) if priority == Colonist.WORK_DISABLED else Color.WHITE
+	var next_text := PRIORITY_DISABLED_TEXT if priority == Colonist.WORK_DISABLED else str(priority)
+	var next_modulate := Color(0.72, 0.72, 0.72) if priority == Colonist.WORK_DISABLED else Color.WHITE
+	if button.text != next_text:
+		button.text = next_text
+	if button.modulate != next_modulate:
+		button.modulate = next_modulate
 
 
 func _get_live_colonists() -> Array[Colonist]:

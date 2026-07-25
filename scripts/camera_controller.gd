@@ -13,9 +13,9 @@ func _process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			_apply_zoom(-zoom_step)
-		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_apply_zoom(zoom_step)
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			_apply_zoom(-zoom_step)
 
 func _apply_zoom(step: float) -> void:
 	var next_zoom: float = clampf(zoom.x + step, min_zoom, max_zoom)

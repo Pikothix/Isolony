@@ -1,0 +1,194 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://experimental/procedural_creature_research/creature_gallery.gd" id="1_gallery"]
+
+[node name="CreatureGallery" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_gallery")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.075, 0.086, 0.11, 1)
+
+[node name="Gallery" type="Node2D" parent="."]
+unique_name_in_owner = true
+
+[node name="Controls" type="HBoxContainer" parent="."]
+layout_mode = 0
+offset_left = 24.0
+offset_top = 20.0
+offset_right = 850.0
+offset_bottom = 62.0
+theme_override_constants/separation = 10
+
+[node name="Title" type="Label" parent="Controls"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "PROCEDURAL QUADRUPED RESEARCH"
+
+[node name="PreviousButton" type="Button" parent="Controls"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Previous"
+
+[node name="SeedInput" type="SpinBox" parent="Controls"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(150, 0)
+layout_mode = 2
+max_value = 2000000000.0
+value = 1000.0
+allow_greater = false
+allow_lesser = false
+
+[node name="NextButton" type="Button" parent="Controls"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Next"
+
+[node name="RandomButton" type="Button" parent="Controls"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Random"
+
+[node name="RegenerateButton" type="Button" parent="Controls"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Regenerate"
+
+[node name="SummaryLabel" type="Label" parent="."]
+unique_name_in_owner = true
+offset_left = 24.0
+offset_top = 180.0
+offset_right = 900.0
+offset_bottom = 208.0
+theme_override_colors/font_color = Color(0.72, 0.76, 0.82, 1)
+
+[node name="Diagnostics" type="HBoxContainer" parent="."]
+offset_left = 24.0
+offset_top = 67.0
+offset_right = 850.0
+offset_bottom = 103.0
+theme_override_constants/separation = 12
+
+[node name="ModeLabel" type="Label" parent="Diagnostics"]
+layout_mode = 2
+text = "View:"
+
+[node name="ModeSelector" type="OptionButton" parent="Diagnostics"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(150, 0)
+layout_mode = 2
+
+[node name="GalleryLabel" type="Label" parent="Diagnostics"]
+layout_mode = 2
+text = "Specimens:"
+
+[node name="GallerySelector" type="OptionButton" parent="Diagnostics"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(175, 0)
+layout_mode = 2
+
+[node name="GameScaleToggle" type="CheckButton" parent="Diagnostics"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Game scale (32x16 cell)"
+
+[node name="FacingLabel" type="Label" parent="Diagnostics"]
+layout_mode = 2
+text = "Facing:"
+
+[node name="FacingSelector" type="OptionButton" parent="Diagnostics"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(72, 0)
+layout_mode = 2
+
+[node name="FourFacingToggle" type="CheckButton" parent="Diagnostics"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Four facings"
+
+[node name="Motion" type="HBoxContainer" parent="."]
+offset_left = 24.0
+offset_top = 106.0
+offset_right = 850.0
+offset_bottom = 141.0
+theme_override_constants/separation = 10
+
+[node name="MotionLabel" type="Label" parent="Motion"]
+layout_mode = 2
+text = "Motion:"
+
+[node name="IdleButton" type="Button" parent="Motion"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Idle"
+
+[node name="WalkingButton" type="Button" parent="Motion"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Treadmill Walk"
+
+[node name="PlantedButton" type="Button" parent="Motion"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Planted Walk"
+
+[node name="ResetLocomotionButton" type="Button" parent="Motion"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Reset Locomotion"
+
+[node name="PauseButton" type="CheckButton" parent="Motion"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Pause"
+
+[node name="SpeedLabel" type="Label" parent="Motion"]
+layout_mode = 2
+text = "Speed"
+
+[node name="SpeedSlider" type="HSlider" parent="Motion"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(150, 0)
+layout_mode = 2
+min_value = 0.25
+max_value = 2.0
+step = 0.05
+value = 1.0
+
+[node name="SpeedValue" type="Label" parent="Motion"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "1.00x"
+
+[node name="MotionState" type="Label" parent="Motion"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Idle"
+
+[node name="RendererControls" type="HBoxContainer" parent="."]
+offset_left = 24.0
+offset_top = 144.0
+offset_right = 650.0
+offset_bottom = 177.0
+theme_override_constants/separation = 10
+
+[node name="RendererLabel" type="Label" parent="RendererControls"]
+layout_mode = 2
+text = "Renderer:"
+
+[node name="RendererSelector" type="OptionButton" parent="RendererControls"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(190, 0)
+layout_mode = 2

@@ -3,7 +3,7 @@ class_name RenderDebugPanel
 
 ## Purpose: Expose transient rendering diagnostics during gameplay.
 ## Responsibility: Mirror user selections to ChunkManager's presentation setters only.
-## Assumption: F3 state and render choices are scene-local and intentionally unsaved.
+## Assumption: Number-key debug state and render choices are scene-local and intentionally unsaved.
 
 @export var chunk_manager_path: NodePath = NodePath("../../ChunkManager")
 
@@ -31,7 +31,7 @@ func _ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F3:
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_3:
 		visible = not visible
 		if visible:
 			_sync_from_chunk_manager()

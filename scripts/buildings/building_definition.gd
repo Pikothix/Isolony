@@ -6,6 +6,14 @@ class_name BuildingDefinition
 ## Assumption: Definitions are code-backed until an external content format is explicitly needed.
 
 const DEFINITIONS := {
+	"supply_cache": {
+		"id": "supply_cache", "display_name": "Supply Cache", "architect_order": 1,
+		"footprint": Vector2i.ONE, "cost": {"wood": 20}, "build_time": 25.0,
+		"construction_visual_id": "supply_cache_scaffold", "completed_visual_id": "supply_cache_placeholder",
+		"construction_scene_path": "", "completed_scene_path": "", "icon_path": "",
+		"placeholder_palette": {"foundation_fill": Color(0.36, 0.25, 0.12, 0.75), "foundation_line": Color(0.66, 0.48, 0.22), "scaffold_dark": Color(0.25, 0.13, 0.05), "scaffold_light": Color(0.56, 0.34, 0.12), "crate": Color(0.58, 0.38, 0.16), "crate_line": Color(0.25, 0.14, 0.05)},
+		"storage_capacity": 100, "allowed_resources": ["wood", "stone", "food"], "effect_tags": ["storage"],
+	},
 	"campfire": {
 		"id": "campfire",
 		"display_name": "Campfire",

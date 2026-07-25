@@ -1,0 +1,83 @@
+[gd_resource type="Theme" format=3 uid="uid://bob6lf5hkpnaa"]
+
+[sub_resource type="StyleBoxFlat" id="Active"]
+content_margin_left = 4.0
+content_margin_right = 2.0
+bg_color = Color(0.04, 0.08, 0.47, 1)
+
+[sub_resource type="StyleBoxFlat" id="Inset"]
+bg_color = Color(0.86, 0.86, 0.86, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.35, 0.35, 0.35, 1)
+
+[sub_resource type="StyleBoxFlat" id="ButtonHover"]
+bg_color = Color(0.82, 0.82, 0.82, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(1, 1, 1, 1)
+
+[sub_resource type="StyleBoxFlat" id="ButtonNormal"]
+bg_color = Color(0.753, 0.753, 0.753, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.95, 0.95, 0.95, 1)
+
+[sub_resource type="StyleBoxFlat" id="ButtonPressed"]
+bg_color = Color(0.66, 0.66, 0.66, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.25, 0.25, 0.25, 1)
+
+[sub_resource type="StyleBoxFlat" id="Inactive"]
+content_margin_left = 4.0
+content_margin_right = 2.0
+bg_color = Color(0.42, 0.42, 0.42, 1)
+
+[sub_resource type="StyleBoxFlat" id="Window"]
+bg_color = Color(0.753, 0.753, 0.753, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.12, 0.12, 0.12, 1)
+corner_detail = 1
+
+[sub_resource type="StyleBoxFlat" id="Taskbar"]
+bg_color = Color(0.753, 0.753, 0.753, 1)
+border_width_top = 2
+border_color = Color(1, 1, 1, 1)
+
+[resource]
+default_font_size = 12
+ActiveTitleBar/styles/panel = SubResource("Active")
+Button/colors/font_color = Color(0.05, 0.05, 0.05, 1)
+Button/colors/font_disabled_color = Color(0.35, 0.35, 0.35, 1)
+Button/colors/font_focus_color = Color(0.05, 0.05, 0.05, 1)
+Button/colors/font_hover_color = Color(0.05, 0.05, 0.05, 1)
+Button/colors/font_pressed_color = Color(0.05, 0.05, 0.05, 1)
+Button/styles/disabled = SubResource("Inset")
+Button/styles/focus = SubResource("ButtonHover")
+Button/styles/hover = SubResource("ButtonHover")
+Button/styles/normal = SubResource("ButtonNormal")
+Button/styles/pressed = SubResource("ButtonPressed")
+InactiveTitleBar/colors/font_color = Color(0.05, 0.05, 0.05, 1)
+InactiveTitleBar/styles/panel = SubResource("Inactive")
+InsetPanel/styles/panel = SubResource("Inset")
+ItemList/colors/font_color = Color(0.05, 0.05, 0.05, 1)
+ItemList/colors/font_selected_color = Color(1, 1, 1, 1)
+Label/colors/font_color = Color(0.05, 0.05, 0.05, 1)
+LineEdit/colors/font_color = Color(0.05, 0.05, 0.05, 1)
+LineEdit/colors/font_uneditable_color = Color(0.35, 0.35, 0.35, 1)
+PanelContainer/styles/panel = SubResource("Window")
+Taskbar/styles/panel = SubResource("Taskbar")
+WindowTitle/colors/font_color = Color(1, 1, 1, 1)
+WindowTitle/font_sizes/font_size = 12

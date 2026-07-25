@@ -1,0 +1,33 @@
+[gd_scene format=3 uid="uid://dblk4aa1ju5tg"]
+
+[ext_resource type="Script" uid="uid://drcvuitorqt2e" path="res://experimental/procedural_building_research/procedural_building_prototype.gd" id="1_prototype"]
+
+[node name="ProceduralBuildingPrototype" type="Node2D" unique_id=825190227]
+position = Vector2(576, 310)
+script = ExtResource("1_prototype")
+starting_style = 1
+
+[node name="Camera2D" type="Camera2D" parent="." unique_id=2103763983]
+position = Vector2(0, -20)
+
+[node name="GeneratedVisuals" type="Node2D" parent="." unique_id=1037668091]
+
+[node name="ResearchLabel" type="Label" parent="." unique_id=504296130]
+offset_left = -550.0
+offset_top = -285.0
+offset_right = -40.0
+offset_bottom = -200.0
+theme_override_colors/font_color = Color(0.9, 0.9, 0.92, 1)
+theme_override_font_sizes/font_size = 18
+text = "ISOLATED TOPOLOGY-DRIVEN BUILDING RESEARCH
+Authored L footprint - 2 rooms - explicit walls/openings - 2 roof regions"
+autowrap_mode = 2
+
+[node name="Background" type="ColorRect" parent="." unique_id=986579393]
+show_behind_parent = true
+offset_left = -576.0
+offset_top = -310.0
+offset_right = 576.0
+offset_bottom = 338.0
+mouse_filter = 2
+color = Color(0.075, 0.086, 0.11, 1)

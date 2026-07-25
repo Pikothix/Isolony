@@ -1,0 +1,28 @@
+[gd_resource type="Resource" script_class="CreatureDefinition" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://experimental/procedural_creature_research/creature_definition.gd" id="1_definition"]
+
+[resource]
+script = ExtResource("1_definition")
+definition_id = &"small_quadruped"
+body_length_range = Vector2i(20, 32)
+body_height_range = Vector2i(10, 17)
+head_size_range = Vector2i(7, 12)
+leg_length_range = Vector2i(8, 15)
+leg_thickness_range = Vector2i(2, 5)
+tail_length_range = Vector2i(8, 22)
+tail_probability = 0.65
+body_colors = Array[Color]([Color(0.65, 0.42, 0.25, 1), Color(0.72, 0.67, 0.54, 1), Color(0.36, 0.42, 0.48, 1), Color(0.72, 0.38, 0.3, 1), Color(0.45, 0.33, 0.5, 1)])
+detail_colors = Array[Color]([Color(0.28, 0.16, 0.1, 1), Color(0.34, 0.29, 0.22, 1), Color(0.17, 0.2, 0.24, 1), Color(0.34, 0.14, 0.12, 1), Color(0.22, 0.14, 0.27, 1)])
+ear_profiles = PackedStringArray("round", "pointed", "long")
+body_profiles = PackedStringArray("lean", "neutral", "stocky", "heavy_front", "heavy_rear")
+posture_profiles = PackedStringArray("neutral", "alert", "curious", "relaxed", "proud")
+torso_taper_range = Vector2(-0.22, 0.22)
+chest_depth_range = Vector2(0.82, 1.25)
+hip_volume_range = Vector2(0.82, 1.24)
+stance_width_range = Vector2(0.9, 1.18)
+back_curve_range = Vector2(-0.12, 0.12)
+belly_curve_range = Vector2(-0.12, 0.16)
+shoulder_slope_range = Vector2(-0.1, 0.12)
+rump_slope_range = Vector2(-0.1, 0.12)
+neck_thickness_range = Vector2(0.65, 1.15)

@@ -1,0 +1,114 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/genesis/genesis_engine_state.gd" id="1_simulation"]
+[ext_resource type="Script" path="res://scripts/genesis/genesis_terminal.gd" id="2_terminal"]
+
+[sub_resource type="SystemFont" id="SystemFont_terminal"]
+font_names = PackedStringArray("Consolas", "Courier New", "monospace")
+
+[node name="Genesis" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_simulation")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.015, 0.015, 0.015, 1)
+
+[node name="TerminalMargin" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 24.0
+offset_top = 20.0
+offset_right = -24.0
+offset_bottom = -20.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 8
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 8
+
+[node name="Workspace" type="HBoxContainer" parent="TerminalMargin"]
+layout_mode = 2
+theme_override_constants/separation = 18
+
+[node name="Terminal" type="VBoxContainer" parent="TerminalMargin/Workspace"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_stretch_ratio = 0.65
+theme_override_constants/separation = 8
+script = ExtResource("2_terminal")
+
+[node name="BannerTitle" type="Label" parent="TerminalMargin/Workspace/Terminal"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.82, 0.82, 0.82, 1)
+theme_override_fonts/font = SubResource("SystemFont_terminal")
+theme_override_font_sizes/font_size = 22
+text = "GENESIS"
+
+[node name="BannerSubtitle" type="Label" parent="TerminalMargin/Workspace/Terminal"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.62, 0.62, 0.62, 1)
+theme_override_fonts/font = SubResource("SystemFont_terminal")
+theme_override_font_sizes/font_size = 15
+text = "Experimental Bootstrap Environment"
+
+[node name="BannerHint" type="Label" parent="TerminalMargin/Workspace/Terminal"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.62, 0.62, 0.62, 1)
+theme_override_fonts/font = SubResource("SystemFont_terminal")
+theme_override_font_sizes/font_size = 15
+text = "Type \"boot\" to initialise the runtime."
+
+[node name="Output" type="RichTextLabel" parent="TerminalMargin/Workspace/Terminal"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_colors/default_color = Color(0.82, 0.82, 0.82, 1)
+theme_override_fonts/normal_font = SubResource("SystemFont_terminal")
+theme_override_font_sizes/normal_font_size = 17
+bbcode_enabled = false
+scroll_active = true
+scroll_following = true
+selection_enabled = true
+
+[node name="InputRow" type="HBoxContainer" parent="TerminalMargin/Workspace/Terminal"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Prompt" type="Label" parent="TerminalMargin/Workspace/Terminal/InputRow"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.82, 0.82, 0.82, 1)
+theme_override_fonts/font = SubResource("SystemFont_terminal")
+theme_override_font_sizes/font_size = 17
+text = ">"
+
+[node name="CommandInput" type="LineEdit" parent="TerminalMargin/Workspace/Terminal/InputRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.82, 0.82, 0.82, 1)
+theme_override_colors/caret_color = Color(0.82, 0.82, 0.82, 1)
+theme_override_colors/font_placeholder_color = Color(0.45, 0.45, 0.45, 1)
+theme_override_fonts/font = SubResource("SystemFont_terminal")
+theme_override_font_sizes/font_size = 17
+placeholder_text = "command"
+clear_button_enabled = false

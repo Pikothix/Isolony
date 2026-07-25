@@ -2,8 +2,8 @@ extends Node2D
 class_name Colonist
 
 ## Purpose: Persistent colonist records plus transient loaded-cell path movement, player Move commands, construction delivery, prioritized work, needs, and need-seeking behavior.
-## Responsibility: Own authoritative identity, character data, needs, and work priorities while executing transient player commands and simulation-issued work over non-authoritative paths.
-## Assumption: Import resumes from idle at the saved position; player commands, jobs, paths, carrying, reservations, movement targets, selection, and debug state are not saved.
+## Responsibility: Own authoritative identity, WorldSpace/cell location, character data, needs, and work priorities while executing transient player commands and simulation-issued work over non-authoritative paths.
+## Assumption: Import resumes from idle at the saved WorldSpace/cell; player commands, jobs, paths, carrying, reservations, movement targets, selection, and active rendered space are not saved.
 
 const TraitRegistryRef = preload("res://scripts/entities/colonist_trait_registry.gd")
 const ReachabilityQueryRef = preload("res://scripts/world/reachability_query.gd")
@@ -45,8 +45,10 @@ const JOB_TYPE_CONSTRUCT := "construct"
 const JOB_TYPE_DELIVER_CONSTRUCTION := "deliver_construction_material"
 const JOB_TYPE_HARVEST := "harvest"
 const JOB_TYPE_HAUL := "haul"
+const JOB_TYPE_MINE := "mine"
 const JOB_CANDIDATE_LIMIT := 16
 const JOB_EVALUATION_INTERVAL := 0.25
+const NEED_EVALUATION_INTERVAL := 0.25
 const JOB_EVALUATION_STAGGER_SLOTS := 8
 const DEFAULT_WORK_PRIORITIES := {
 	"Construct": 2,
@@ -76,10 +78,14 @@ enum Activity {
 	EATING,
 	MOVING_TO_HARVEST,
 	HARVESTING,
+	MOVING_TO_MINE,
+	MINING,
 	MOVING_TO_HAUL_ITEM,
 	CARRYING_ITEM,
 	MOVING_TO_STOCKPILE,
 	DEPOSITING,
+	MOVING_TO_WORLD_SPACE_CONNECTION,
+	USING_WORLD_SPACE_CONNECTION,
 }
 
 enum PlayerCommand {
@@ -94,6 +100,8 @@ enum PlayerCommand {
 @export_range(0.1, 20.0, 0.1) var construction_work_rate: float = 2.0
 @export_range(1.0, 120.0, 1.0) var construction_travel_timeout: float = 30.0
 @export_range(0.1, 10.0, 0.1) var harvest_work_duration: float = 2.0
+@export_range(0.1, 10.0, 0.1) var mining_work_duration: float = 3.0
+@export_range(1.0, 120.0, 1.0) var mining_travel_timeout: float = 30.0
 @export_range(1.0, 120.0, 1.0) var haul_travel_timeout: float = 30.0
 @export_range(0.0, 2.0, 0.01) var night_rest_decay_rate: float = 0.12
 @export_range(0.0, 2.0, 0.01) var day_rest_recovery_rate: float = 0.08
@@ -110,7 +118,7 @@ enum PlayerCommand {
 @export_range(0.0, 100.0, 1.0) var warmth_seek_threshold: float = 60.0
 @export_range(0.0, 100.0, 1.0) var shelter_seek_threshold: float = 60.0
 @export_range(0.0, 100.0, 1.0) var need_seek_recovery_threshold: float = 80.0
-@export var show_needs_debug: bool = true
+@export var show_needs_debug: bool = false
 
 var colonist_id: String = ""
 var first_name: String = ""
@@ -141,17 +149,27 @@ var _eating_timer: float = 0.0
 var _harvest_order_id: String = ""
 var _harvest_travel_elapsed: float = 0.0
 var _harvest_work_elapsed: float = 0.0
+var _mining_order_id: String = ""
+var _mining_target_cell: Vector2i = Vector2i.ZERO
+var _mining_travel_elapsed: float = 0.0
+var _mining_work_elapsed: float = 0.0
 var _haul_item_id: String = ""
 var _haul_destination_cell: Vector2i = Vector2i.ZERO
 var _haul_travel_elapsed: float = 0.0
 var _carried_item: Dictionary = {}
+var _world_space_connection_id: String = ""
 var _current_path: Array[Vector2i] = []
 var _current_path_world_space_id: String = ChunkManager.SURFACE_WORLD_SPACE_ID
 var _path_index: int = 0
 var _target_position: Vector2 = Vector2.ZERO
 var _pause_timer: float = 0.0
 var _job_evaluation_cooldown_remaining: float = 0.0
+var _need_evaluation_cooldown_remaining: float = 0.0
 var _job_scheduling_counters: Dictionary = {}
+var _process_profile_enabled := false
+var _process_profile_total_usec := 0
+var _process_profile_max_usec := 0
+var _process_profile_samples := 0
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _is_environment_warm: bool = false
 var _is_environment_sheltered: bool = false
@@ -171,6 +189,7 @@ func _exit_tree() -> void:
 			_finish_construction_delivery_job("colonist_exit_tree")
 		world_state.release_all_reservations_for_colonist(colonist_id, "colonist_exit_tree")
 		world_state.release_all_harvest_orders_for_colonist(colonist_id, "colonist_exit_tree")
+		world_state.release_all_mining_orders_for_colonist(colonist_id, "colonist_exit_tree")
 		world_state.release_all_haul_reservations_for_colonist(colonist_id, "colonist_exit_tree")
 
 func initialize(
@@ -192,24 +211,37 @@ func initialize(
 	_set_initial_skills(initial_skills)
 	_set_initial_traits(initial_trait_ids)
 	_set_initial_work_priorities({})
-	current_world_space_id = initial_world_space_id if initial_world_space_id == ChunkManager.SURFACE_WORLD_SPACE_ID else ChunkManager.SURFACE_WORLD_SPACE_ID
+	current_world_space_id = initial_world_space_id if chunk_manager.is_world_space_supported(initial_world_space_id) else ChunkManager.SURFACE_WORLD_SPACE_ID
 	current_cell = spawn_cell
 	target_cell = spawn_cell
-	global_position = chunk_manager.get_cell_world_position(spawn_cell) + Vector2(0, -6)
+	global_position = chunk_manager.get_cell_visual_world_position(spawn_cell, current_world_space_id)
 	_enter_idle()
 	_set_initial_job_evaluation_stagger()
 	reset_job_scheduling_debug_counters()
 	_update_needs_label()
 
-func _process(delta: float) -> void:
+func _process(frame_delta: float) -> void:
+	var profile_started_usec: int = Time.get_ticks_usec() if _process_profile_enabled else 0
 	if chunk_manager == null:
+		_record_process_profile(profile_started_usec)
+		return
+	var is_in_active_world_space: bool = current_world_space_id == chunk_manager.get_active_world_space_id()
+	visible = is_in_active_world_space
+	if not is_in_active_world_space:
+		_record_process_profile(profile_started_usec)
+		return
+	var delta: float = world_state.get_simulation_delta(frame_delta) if world_state != null else 0.0
+	if delta <= 0.0:
+		_record_process_profile(profile_started_usec)
 		return
 	_update_needs(delta)
 	match _activity:
 		Activity.IDLE:
-			_process_idle(delta)
-		Activity.WANDERING, Activity.MOVING_TO_PLAYER_COMMAND, Activity.MOVING_TO_CONSTRUCTION_MATERIAL, Activity.MOVING_CONSTRUCTION_MATERIAL_TO_SITE, Activity.MOVING_TO_CONSTRUCTION, Activity.MOVING_TO_HARVEST, Activity.MOVING_TO_HAUL_ITEM, Activity.MOVING_TO_STOCKPILE:
+			_process_idle(delta, frame_delta)
+		Activity.WANDERING, Activity.MOVING_TO_PLAYER_COMMAND, Activity.MOVING_TO_CONSTRUCTION_MATERIAL, Activity.MOVING_CONSTRUCTION_MATERIAL_TO_SITE, Activity.MOVING_TO_CONSTRUCTION, Activity.MOVING_TO_HARVEST, Activity.MOVING_TO_MINE, Activity.MOVING_TO_HAUL_ITEM, Activity.MOVING_TO_STOCKPILE, Activity.MOVING_TO_WORLD_SPACE_CONNECTION:
 			_move_towards_target(delta)
+		Activity.USING_WORLD_SPACE_CONNECTION:
+			_complete_world_space_connection_use()
 		Activity.CONSTRUCTING:
 			_process_construction(delta)
 		Activity.SEEKING_WARMTH, Activity.SEEKING_SHELTER:
@@ -218,10 +250,13 @@ func _process(delta: float) -> void:
 			_process_eating(delta)
 		Activity.HARVESTING:
 			_process_harvesting(delta)
+		Activity.MINING:
+			_process_mining(delta)
 		Activity.CARRYING_CONSTRUCTION_MATERIAL, Activity.DELIVERING_CONSTRUCTION_MATERIAL:
 			_process_construction_material_delivery()
 		Activity.CARRYING_ITEM, Activity.DEPOSITING:
 			_process_hauling()
+	_record_process_profile(profile_started_usec)
 
 func get_activity_name() -> String:
 	return Activity.keys()[_activity].to_lower()
@@ -233,6 +268,30 @@ func get_job_scheduling_debug_counters() -> Dictionary:
 	snapshot["cooldown_interval"] = JOB_EVALUATION_INTERVAL
 	return snapshot
 
+
+func set_process_profiling_enabled(enabled: bool) -> void:
+	_process_profile_enabled = enabled
+
+
+func set_needs_label_visible(enabled: bool) -> void:
+	## Presentation-only debug control; needs remain authoritative colonist state.
+	if show_needs_debug == enabled:
+		return
+	show_needs_debug = enabled
+	_update_needs_label()
+
+
+func is_needs_label_visible() -> bool:
+	return _needs_label != null and _needs_label.visible
+
+
+func consume_process_profile() -> Dictionary:
+	var snapshot := {"samples": _process_profile_samples, "total_usec": _process_profile_total_usec, "max_usec": _process_profile_max_usec}
+	_process_profile_total_usec = 0
+	_process_profile_max_usec = 0
+	_process_profile_samples = 0
+	return snapshot
+
 func reset_job_scheduling_debug_counters() -> void:
 	_job_scheduling_counters = {
 		"job_evaluations_attempted": 0,
@@ -242,6 +301,8 @@ func reset_job_scheduling_debug_counters() -> void:
 		"path_queries_failed": 0,
 		"reservations_attempted": 0,
 		"reservations_succeeded": 0,
+		"need_seeking_attempted": 0,
+		"need_path_queries": 0,
 	}
 
 func get_full_name() -> String:
@@ -344,6 +405,9 @@ func get_construction_delivery_site_id() -> String:
 func get_harvest_order_id() -> String:
 	return _harvest_order_id
 
+func get_mining_order_id() -> String:
+	return _mining_order_id
+
 func get_haul_item_id() -> String:
 	return _haul_item_id
 
@@ -363,6 +427,53 @@ func request_manual_move(destination_cell: Vector2i) -> Dictionary:
 	if not has_active_path():
 		_complete_path_arrival()
 	return _build_manual_move_result(true, "accepted", destination_cell)
+
+func request_use_world_space_connection(connection_id: String) -> Dictionary:
+	## Move locally to this WorldSpace's endpoint; topology is validated by WorldState at command time and arrival.
+	if world_state == null or chunk_manager == null:
+		return _build_world_space_connection_result(false, "transition_context_unavailable", connection_id, current_world_space_id, current_cell, "", Vector2i.ZERO)
+	var connection: Dictionary = world_state.get_connection(connection_id)
+	if connection.is_empty():
+		return _build_world_space_connection_result(false, "connection_unavailable", connection_id, current_world_space_id, current_cell, "", Vector2i.ZERO)
+	if not bool(connection.get("enabled", false)):
+		return _build_world_space_connection_result(false, "connection_disabled", connection_id, current_world_space_id, current_cell, "", Vector2i.ZERO)
+	var source_cell: Vector2i = _get_connection_endpoint_cell(connection, current_world_space_id)
+	if source_cell == Vector2i(2147483647, 2147483647):
+		return _build_world_space_connection_result(false, "connection_not_in_current_world_space", connection_id, current_world_space_id, current_cell, "", Vector2i.ZERO)
+	var preflight: Dictionary = world_state.request_colonist_transition_through_connection(connection_id, colonist_id, current_world_space_id, source_cell)
+	if not bool(preflight.get("ok", false)):
+		return _build_world_space_connection_result(false, String(preflight.get("reason", "transition_rejected")), connection_id, current_world_space_id, source_cell, "", Vector2i.ZERO)
+	var path_result: Dictionary = _query_path(source_cell)
+	if not bool(path_result.get("reachable", false)):
+		return _build_world_space_connection_result(false, String(path_result.get("reason", "unreachable")), connection_id, current_world_space_id, source_cell, String(preflight.get("destination_world_space_id", "")), preflight.get("destination_cell", Vector2i.ZERO))
+	_abandon_current_activity_for_manual_move()
+	_world_space_connection_id = connection_id
+	_apply_path(path_result, source_cell)
+	_activity = Activity.MOVING_TO_WORLD_SPACE_CONNECTION
+	if not has_active_path():
+		_complete_path_arrival()
+	return _build_world_space_connection_result(true, "accepted", connection_id, current_world_space_id, source_cell, String(preflight.get("destination_world_space_id", "")), preflight.get("destination_cell", Vector2i.ZERO))
+
+func request_developer_world_space_transition(destination_world_space_id: String, destination_cell: Vector2i) -> Dictionary:
+	## Developer-only simulation mutation for isolated diagnostics. Production cave view switching does not move colonists.
+	if chunk_manager == null or not chunk_manager.is_world_space_supported(destination_world_space_id):
+		return {"ok": false, "reason": "unsupported_world_space_id", "world_space_id": current_world_space_id, "cell": current_cell}
+	_abandon_current_activity_for_manual_move()
+	if world_state != null and not colonist_id.is_empty():
+		world_state.release_all_reservations_for_colonist(colonist_id, "world_space_transition")
+		world_state.release_all_harvest_orders_for_colonist(colonist_id, "world_space_transition")
+		world_state.release_all_mining_orders_for_colonist(colonist_id, "world_space_transition")
+		world_state.release_all_haul_reservations_for_colonist(colonist_id, "world_space_transition")
+	current_world_space_id = destination_world_space_id
+	current_cell = destination_cell
+	target_cell = destination_cell
+	global_position = chunk_manager.get_cell_visual_world_position(destination_cell, current_world_space_id)
+	_reset_transient_state()
+	sync_active_world_space_visibility()
+	return {"ok": true, "reason": "transitioned", "world_space_id": current_world_space_id, "cell": current_cell}
+
+func sync_active_world_space_visibility() -> void:
+	visible = chunk_manager != null and current_world_space_id == chunk_manager.get_active_world_space_id()
 
 func get_player_command_name() -> String:
 	return PlayerCommand.keys()[_player_command].to_lower()
@@ -430,7 +541,7 @@ func import_state(data: Dictionary) -> Dictionary:
 	if saved_id.is_empty() or saved_id != colonist_id:
 		return {"ok": false, "reason": "colonist_id_mismatch", "relationships": []}
 	var imported_world_space_id: String = String(data.get("world_space_id", ChunkManager.SURFACE_WORLD_SPACE_ID))
-	if imported_world_space_id != ChunkManager.SURFACE_WORLD_SPACE_ID:
+	if not _is_imported_world_space_supported(imported_world_space_id):
 		return {"ok": false, "reason": "unsupported_world_space_id", "relationships": []}
 	current_world_space_id = imported_world_space_id
 	first_name = String(data.get("first_name", first_name)).strip_edges()
@@ -454,7 +565,7 @@ func import_state(data: Dictionary) -> Dictionary:
 	if position_values.size() >= 2:
 		global_position = Vector2(float(position_values[0]), float(position_values[1]))
 	else:
-		global_position = chunk_manager.get_cell_world_position(current_cell) + Vector2(0, -6)
+		global_position = chunk_manager.get_cell_visual_world_position(current_cell, current_world_space_id)
 	_relationships.clear()
 	_reset_transient_state()
 	_update_needs_label()
@@ -474,6 +585,16 @@ func _set_initial_skills(initial_skills: Dictionary) -> void:
 			"xp": maxf(float(provided.get("xp", 0.0)), 0.0),
 			"passion": passion,
 		}
+
+func _is_imported_world_space_supported(world_space_id: String) -> bool:
+	## Missing legacy fields default before this check; explicit identities must name current simulation authority.
+	if world_space_id == ChunkManager.SURFACE_WORLD_SPACE_ID:
+		return true
+	if chunk_manager != null:
+		return chunk_manager.is_world_space_supported(world_space_id)
+	if world_state != null and world_state.has_method("get_interior_for_world_space"):
+		return not world_state.get_interior_for_world_space(world_space_id).is_empty()
+	return false
 
 func _set_initial_traits(initial_trait_ids: Array[String]) -> void:
 	## Ignore invalid, duplicate, or conflicting manager input while preserving registry order.
@@ -514,10 +635,15 @@ func _reset_transient_state() -> void:
 	_harvest_order_id = ""
 	_harvest_travel_elapsed = 0.0
 	_harvest_work_elapsed = 0.0
+	_mining_order_id = ""
+	_mining_target_cell = Vector2i.ZERO
+	_mining_travel_elapsed = 0.0
+	_mining_work_elapsed = 0.0
 	_haul_item_id = ""
 	_haul_destination_cell = Vector2i.ZERO
 	_haul_travel_elapsed = 0.0
 	_carried_item.clear()
+	_world_space_connection_id = ""
 	_clear_path()
 	target_cell = current_cell
 	_target_position = global_position
@@ -529,10 +655,11 @@ func _reset_transient_state() -> void:
 func _update_needs(delta: float) -> void:
 	if world_state == null or delta <= 0.0:
 		return
-	current_cell = chunk_manager.world_to_cell(global_position + Vector2(0, 6))
+	if not has_active_path():
+		current_cell = chunk_manager.world_to_cell(global_position + Vector2(0, 6))
 	var is_night: bool = world_state.is_night()
-	_is_environment_warm = world_state.is_cell_warmed(current_cell)
-	_is_environment_sheltered = world_state.is_cell_sheltered(current_cell)
+	_is_environment_warm = world_state.is_cell_warmed(current_cell, current_world_space_id)
+	_is_environment_sheltered = world_state.is_cell_sheltered(current_cell, current_world_space_id)
 	hunger -= hunger_decay_rate * delta
 	if is_night:
 		rest -= get_effective_night_rest_decay_rate() * delta
@@ -559,7 +686,8 @@ func _update_needs(delta: float) -> void:
 func _update_needs_label() -> void:
 	if _needs_label == null:
 		return
-	_needs_label.visible = show_needs_debug
+	if _needs_label.visible != show_needs_debug:
+		_needs_label.visible = show_needs_debug
 	if not show_needs_debug:
 		return
 	var next_text := "R%02d W%02d S%02d H%02d" % [roundi(rest), roundi(warmth), roundi(shelter), roundi(hunger)]
@@ -570,18 +698,23 @@ func _update_needs_label() -> void:
 	var lowest_need: float = minf(rest, minf(warmth, minf(shelter, hunger)))
 	_needs_label.modulate = Color(0.65, 1.0, 0.68) if lowest_need >= 65.0 else (Color(1.0, 0.86, 0.35) if lowest_need >= 35.0 else Color(1.0, 0.38, 0.32))
 
-func _process_idle(delta: float) -> void:
+func _process_idle(delta: float, frame_delta: float) -> void:
 	_job_evaluation_cooldown_remaining = maxf(_job_evaluation_cooldown_remaining - delta, 0.0)
+	_need_evaluation_cooldown_remaining = maxf(_need_evaluation_cooldown_remaining - maxf(frame_delta, 0.0), 0.0)
 	_pause_timer -= delta
 	if _pause_timer > 0.0:
 		return
-	if _try_start_need_seeking():
-		return
+	if _need_evaluation_cooldown_remaining <= 0.0:
+		_need_evaluation_cooldown_remaining = NEED_EVALUATION_INTERVAL
+		_increment_job_scheduling_counter("need_seeking_attempted")
+		if _try_start_need_seeking():
+			return
 	if _try_start_eating():
 		return
 	if _job_evaluation_cooldown_remaining > 0.0:
 		return
-	_job_evaluation_cooldown_remaining = JOB_EVALUATION_INTERVAL
+	# Work rates retain simulation delta; candidate scans stay at a wall-clock cadence at 6x.
+	_job_evaluation_cooldown_remaining = JOB_EVALUATION_INTERVAL * world_state.get_time_scale()
 	if _try_start_prioritized_work():
 		return
 	_pick_new_wander_target()
@@ -600,7 +733,7 @@ func collect_available_jobs() -> Array[Dictionary]:
 		return jobs
 	if can_do_work("Construct"):
 		var reachable_delivery_site_ids: Dictionary = {}
-		for delivery: Dictionary in world_state.get_available_construction_material_deliveries(JOB_CANDIDATE_LIMIT):
+		for delivery: Dictionary in world_state.get_available_construction_material_deliveries(JOB_CANDIDATE_LIMIT, current_world_space_id):
 			_increment_job_scheduling_counter("candidates_considered")
 			var item_cell: Vector2i = delivery.get("item_cell", current_cell)
 			var site_cell: Vector2i = delivery.get("site_cell", current_cell)
@@ -621,7 +754,7 @@ func collect_available_jobs() -> Array[Dictionary]:
 			})
 			reachable_delivery_site_ids[String(delivery.get("site_id", ""))] = true
 			break
-		for site: Dictionary in world_state.get_available_construction_sites(JOB_CANDIDATE_LIMIT):
+		for site: Dictionary in world_state.get_available_construction_sites(JOB_CANDIDATE_LIMIT, current_world_space_id):
 			_increment_job_scheduling_counter("candidates_considered")
 			var site_id: String = String(site.get("site_id", ""))
 			if reachable_delivery_site_ids.has(site_id):
@@ -639,7 +772,7 @@ func collect_available_jobs() -> Array[Dictionary]:
 			})
 			break
 	if can_do_work("Harvest"):
-		for order: Dictionary in world_state.get_available_harvest_orders(JOB_CANDIDATE_LIMIT):
+		for order: Dictionary in world_state.get_available_harvest_orders(JOB_CANDIDATE_LIMIT, current_world_space_id):
 			_increment_job_scheduling_counter("candidates_considered")
 			var order_cell: Vector2i = order.get("cell", current_cell)
 			var order_path: Dictionary = _query_job_path(current_cell, order_cell, {"allow_target_resource": true})
@@ -653,8 +786,24 @@ func collect_available_jobs() -> Array[Dictionary]:
 				"reservation_result": {},
 			})
 			break
+	if can_do_work("Mine"):
+		for order: Dictionary in world_state.get_available_mining_orders(JOB_CANDIDATE_LIMIT, current_world_space_id):
+			_increment_job_scheduling_counter("candidates_considered")
+			var mine_cell: Vector2i = order.get("cell", current_cell)
+			var work_target: Dictionary = _find_reachable_mining_work_cell(mine_cell)
+			if not bool(work_target.get("ok", false)):
+				continue
+			jobs.append({
+				"job_type": JOB_TYPE_MINE,
+				"priority": get_work_priority("Mine"),
+				"target_id": String(order.get("order_id", "")),
+				"target_cell": work_target.get("work_cell", current_cell),
+				"mine_cell": mine_cell,
+				"reservation_result": {},
+			})
+			break
 	if can_do_work("Haul"):
-		for item: Dictionary in world_state.get_available_haul_items(colonist_id, JOB_CANDIDATE_LIMIT):
+		for item: Dictionary in world_state.get_available_haul_items(colonist_id, JOB_CANDIDATE_LIMIT, current_world_space_id):
 			_increment_job_scheduling_counter("candidates_considered")
 			var item_cell: Vector2i = item.get("cell", current_cell)
 			var destination_cell: Vector2i = item.get("destination_cell", current_cell)
@@ -752,6 +901,23 @@ func start_job(job: Dictionary) -> bool:
 			_apply_path(harvest_path, harvest_target)
 			_activity = Activity.MOVING_TO_HARVEST
 			return true
+		JOB_TYPE_MINE:
+			if not can_do_work("Mine") or world_state.get_mining_order_reservation(target_id) != colonist_id:
+				_release_job_candidate_reservation(job, "mining_start_validation_failed")
+				return false
+			var mine_target: Vector2i = job.get("mine_cell", current_cell)
+			var mining_work_cell: Vector2i = job.get("target_cell", current_cell)
+			var mining_path: Dictionary = _query_job_path(current_cell, mining_work_cell)
+			if not bool(mining_path.get("reachable", false)):
+				_release_job_candidate_reservation(job, "mining_path_unreachable")
+				return false
+			_mining_order_id = target_id
+			_mining_target_cell = mine_target
+			_mining_travel_elapsed = 0.0
+			_mining_work_elapsed = 0.0
+			_apply_path(mining_path, mining_work_cell)
+			_activity = Activity.MOVING_TO_MINE
+			return true
 		JOB_TYPE_HAUL:
 			var haul_reservation: Dictionary = world_state.get_haul_item_reservation(target_id)
 			if not can_do_work("Haul") or String(haul_reservation.get("reserved_by_colonist_id", "")) != colonist_id:
@@ -794,10 +960,14 @@ func _reserve_job_candidate(candidate: Dictionary) -> Dictionary:
 			if can_do_work("Harvest") and not target_id.is_empty():
 				_increment_job_scheduling_counter("reservations_attempted")
 				result = world_state.reserve_harvest_order(target_id, colonist_id)
+		JOB_TYPE_MINE:
+			if can_do_work("Mine") and not target_id.is_empty():
+				_increment_job_scheduling_counter("reservations_attempted")
+				result = world_state.reserve_mining_order(target_id, colonist_id)
 		JOB_TYPE_HAUL:
 			if can_do_work("Haul") and not target_id.is_empty():
 				_increment_job_scheduling_counter("reservations_attempted")
-				result = world_state.reserve_haul_item(target_id, colonist_id)
+				result = world_state.reserve_haul_item(target_id, colonist_id, current_world_space_id)
 	if bool(result.get("ok", false)):
 		_increment_job_scheduling_counter("reservations_succeeded")
 	return result
@@ -815,6 +985,8 @@ func _release_job_candidate_reservation(job: Dictionary, reason: String) -> void
 			world_state.release_construction_material_delivery(target_id, colonist_id, reason)
 		JOB_TYPE_HARVEST:
 			world_state.release_harvest_order(target_id, colonist_id, reason)
+		JOB_TYPE_MINE:
+			world_state.release_mining_order(target_id, colonist_id, reason)
 		JOB_TYPE_HAUL:
 			world_state.release_haul_item(target_id, colonist_id, reason)
 
@@ -832,8 +1004,26 @@ func _query_job_path(start_cell: Vector2i, destination_cell: Vector2i, options: 
 	_increment_job_scheduling_counter("path_queries_succeeded" if bool(result.get("reachable", false)) else "path_queries_failed")
 	return result
 
+func _find_reachable_mining_work_cell(mine_cell: Vector2i) -> Dictionary:
+	## Mining works from an adjacent ordinary traversable cell; the wall itself remains blocked until completion.
+	for offset: Vector2i in ReachabilityQueryRef.ORTHOGONAL_NEIGHBOURS:
+		var candidate: Vector2i = mine_cell + offset
+		var path_result: Dictionary = _query_job_path(current_cell, candidate)
+		if bool(path_result.get("reachable", false)):
+			return {"ok": true, "reason": "reachable", "work_cell": candidate, "path": path_result}
+	return {"ok": false, "reason": "no_reachable_adjacent_cell", "work_cell": Vector2i.ZERO, "path": {}}
+
 func _increment_job_scheduling_counter(counter_name: String) -> void:
 	_job_scheduling_counters[counter_name] = int(_job_scheduling_counters.get(counter_name, 0)) + 1
+
+
+func _record_process_profile(started_usec: int) -> void:
+	if not _process_profile_enabled:
+		return
+	var elapsed_usec: int = Time.get_ticks_usec() - started_usec
+	_process_profile_total_usec += elapsed_usec
+	_process_profile_max_usec = maxi(_process_profile_max_usec, elapsed_usec)
+	_process_profile_samples += 1
 
 func _set_initial_job_evaluation_stagger() -> void:
 	## Stable id hashing spreads initial work scans without introducing simulation randomness.
@@ -842,6 +1032,7 @@ func _set_initial_job_evaluation_stagger() -> void:
 		slot = (slot * 31 + colonist_id.unicode_at(index)) % JOB_EVALUATION_STAGGER_SLOTS
 	var offset: float = JOB_EVALUATION_INTERVAL * float(slot) / float(JOB_EVALUATION_STAGGER_SLOTS)
 	_job_evaluation_cooldown_remaining = offset
+	_need_evaluation_cooldown_remaining = offset
 	_pause_timer = offset
 
 func _apply_path(path_result: Dictionary, final_cell: Vector2i) -> void:
@@ -853,7 +1044,7 @@ func _apply_path(path_result: Dictionary, final_cell: Vector2i) -> void:
 	_path_index = 0
 	target_cell = final_cell
 	if has_active_path():
-		_target_position = chunk_manager.get_cell_world_position(_current_path[_path_index]) + Vector2(0, -6)
+		_target_position = chunk_manager.get_cell_visual_world_position(_current_path[_path_index], current_world_space_id)
 	else:
 		_target_position = global_position
 
@@ -910,30 +1101,31 @@ func _consume_food_bite() -> bool:
 	return true
 
 func _try_seek_warmth() -> bool:
-	if world_state.is_cell_warmed(current_cell):
+	if world_state.is_cell_warmed(current_cell, current_world_space_id):
 		_clear_path()
 		target_cell = current_cell
 		_target_position = global_position
 		_activity = Activity.SEEKING_WARMTH
 		return true
-	var target: Dictionary = world_state.get_nearest_warmed_cell(current_cell)
+	var target: Dictionary = world_state.get_nearest_warmed_cell(current_cell, current_world_space_id)
 	if not bool(target.get("ok", false)):
 		return false
 	return _set_need_seeking_target(Activity.SEEKING_WARMTH, target.get("cell", current_cell))
 
 func _try_seek_shelter() -> bool:
-	if world_state.is_cell_sheltered(current_cell):
+	if world_state.is_cell_sheltered(current_cell, current_world_space_id):
 		_clear_path()
 		target_cell = current_cell
 		_target_position = global_position
 		_activity = Activity.SEEKING_SHELTER
 		return true
-	var target: Dictionary = world_state.get_nearest_sheltered_cell(current_cell)
+	var target: Dictionary = world_state.get_nearest_sheltered_cell(current_cell, current_world_space_id)
 	if not bool(target.get("ok", false)):
 		return false
 	return _set_need_seeking_target(Activity.SEEKING_SHELTER, target.get("cell", current_cell))
 
 func _set_need_seeking_target(activity: Activity, cell: Vector2i) -> bool:
+	_increment_job_scheduling_counter("need_path_queries")
 	var path_result: Dictionary = _query_path(cell)
 	if not bool(path_result.get("reachable", false)):
 		return false
@@ -948,13 +1140,13 @@ func _process_need_seeking(delta: float) -> void:
 		return
 	var seeking_warmth: bool = _activity == Activity.SEEKING_WARMTH
 	var need_value: float = warmth if seeking_warmth else shelter
-	var in_effect: bool = world_state.is_cell_warmed(current_cell) if seeking_warmth else world_state.is_cell_sheltered(current_cell)
+	var in_effect: bool = world_state.is_cell_warmed(current_cell, current_world_space_id) if seeking_warmth else world_state.is_cell_sheltered(current_cell, current_world_space_id)
 	if in_effect:
 		if need_value >= need_seek_recovery_threshold:
 			_job_evaluation_cooldown_remaining = 0.0
 			_enter_idle()
 		return
-	var target_still_valid: bool = world_state.is_cell_warmed(target_cell) if seeking_warmth else world_state.is_cell_sheltered(target_cell)
+	var target_still_valid: bool = world_state.is_cell_warmed(target_cell, current_world_space_id) if seeking_warmth else world_state.is_cell_sheltered(target_cell, current_world_space_id)
 	if not target_still_valid:
 		var retargeted: bool = _try_seek_warmth() if seeking_warmth else _try_seek_shelter()
 		if not retargeted:
@@ -989,6 +1181,14 @@ func _move_towards_target(delta: float) -> void:
 		if world_state.get_harvest_order_reservation(_harvest_order_id) != colonist_id:
 			_finish_harvest_job("reservation_lost")
 			return
+	elif _activity == Activity.MOVING_TO_MINE and world_state != null:
+		_mining_travel_elapsed += delta
+		if _mining_travel_elapsed >= mining_travel_timeout:
+			_finish_mining_job("mining_travel_timeout")
+			return
+		if world_state.get_mining_order_reservation(_mining_order_id) != colonist_id:
+			_finish_mining_job("reservation_lost")
+			return
 	elif _activity == Activity.MOVING_TO_HAUL_ITEM or _activity == Activity.MOVING_TO_STOCKPILE:
 		_haul_travel_elapsed += delta
 		if world_state == null or _haul_travel_elapsed >= haul_travel_timeout:
@@ -1009,7 +1209,7 @@ func _move_towards_target(delta: float) -> void:
 	if not chunk_manager.can_move_between_cells(current_cell, next_cell, current_world_space_id) or not ReachabilityQueryRef.is_cell_traversable(chunk_manager, world_state, current_world_space_id, next_cell, current_cell, target_cell, options):
 		_fail_current_movement("path_became_blocked")
 		return
-	_target_position = chunk_manager.get_cell_world_position(next_cell) + Vector2(0, -6)
+	_target_position = chunk_manager.get_cell_visual_world_position(next_cell, current_world_space_id)
 	var offset: Vector2 = _target_position - global_position
 	if offset.length() > move_speed * delta:
 		global_position += offset.normalized() * move_speed * delta
@@ -1018,7 +1218,7 @@ func _move_towards_target(delta: float) -> void:
 	current_cell = next_cell
 	_path_index += 1
 	if has_active_path():
-		_target_position = chunk_manager.get_cell_world_position(_current_path[_path_index]) + Vector2(0, -6)
+		_target_position = chunk_manager.get_cell_visual_world_position(_current_path[_path_index], current_world_space_id)
 		return
 	_complete_path_arrival()
 
@@ -1038,8 +1238,12 @@ func _fail_current_movement(reason: String) -> void:
 			_finish_construction_job(reason)
 		Activity.MOVING_TO_HARVEST:
 			_finish_harvest_job(reason)
+		Activity.MOVING_TO_MINE:
+			_finish_mining_job(reason)
 		Activity.MOVING_TO_HAUL_ITEM, Activity.MOVING_TO_STOCKPILE:
 			_finish_haul_job(reason)
+		Activity.MOVING_TO_WORLD_SPACE_CONNECTION:
+			_finish_world_space_connection_use(reason)
 		_:
 			_enter_idle()
 
@@ -1070,6 +1274,15 @@ func _complete_path_arrival() -> void:
 		else:
 			_harvest_work_elapsed = 0.0
 			_activity = Activity.HARVESTING
+	elif _activity == Activity.MOVING_TO_MINE:
+		var mining_order: Dictionary = world_state.get_mining_order(_mining_order_id) if world_state != null else {}
+		if mining_order.is_empty() or mining_order.get("cell", Vector2i.ZERO) != _mining_target_cell:
+			_finish_mining_job("order_invalid")
+		elif abs(current_cell.x - _mining_target_cell.x) + abs(current_cell.y - _mining_target_cell.y) != 1:
+			_finish_mining_job("not_adjacent_to_mine_target")
+		else:
+			_mining_work_elapsed = 0.0
+			_activity = Activity.MINING
 	elif _activity == Activity.MOVING_TO_HAUL_ITEM:
 		var pickup: Dictionary = world_state.request_pickup_ground_item(_haul_item_id, colonist_id)
 		if not bool(pickup.get("ok", false)):
@@ -1079,8 +1292,37 @@ func _complete_path_arrival() -> void:
 			_activity = Activity.CARRYING_ITEM
 	elif _activity == Activity.MOVING_TO_STOCKPILE:
 		_activity = Activity.DEPOSITING
+	elif _activity == Activity.MOVING_TO_WORLD_SPACE_CONNECTION:
+		_activity = Activity.USING_WORLD_SPACE_CONNECTION
+		_complete_world_space_connection_use()
 	elif _activity == Activity.WANDERING:
 		_enter_idle()
+
+func _complete_world_space_connection_use() -> void:
+	if world_state == null or chunk_manager == null or _world_space_connection_id.is_empty():
+		_finish_world_space_connection_use("transition_context_unavailable")
+		return
+	var transition: Dictionary = world_state.request_colonist_transition_through_connection(_world_space_connection_id, colonist_id, current_world_space_id, current_cell)
+	if not bool(transition.get("ok", false)):
+		_finish_world_space_connection_use(String(transition.get("reason", "transition_rejected")))
+		return
+	var destination_world_space_id: String = String(transition.get("destination_world_space_id", ""))
+	var destination_cell: Vector2i = transition.get("destination_cell", Vector2i.ZERO)
+	if not chunk_manager.is_world_space_supported(destination_world_space_id):
+		_finish_world_space_connection_use("unsupported_destination_world_space")
+		return
+	current_world_space_id = destination_world_space_id
+	current_cell = destination_cell
+	target_cell = destination_cell
+	global_position = chunk_manager.get_cell_visual_world_position(destination_cell, current_world_space_id)
+	_clear_path()
+	_world_space_connection_id = ""
+	_enter_idle()
+	sync_active_world_space_visibility()
+
+func _finish_world_space_connection_use(_reason: String) -> void:
+	_world_space_connection_id = ""
+	_enter_idle()
 
 func _process_construction(delta: float) -> void:
 	if world_state == null or _construction_site_id.is_empty():
@@ -1113,7 +1355,7 @@ func _process_construction_material_delivery() -> void:
 		_activity = Activity.MOVING_CONSTRUCTION_MATERIAL_TO_SITE
 		return
 	if _activity == Activity.DELIVERING_CONSTRUCTION_MATERIAL:
-		var result: Dictionary = world_state.request_deliver_construction_material(_construction_delivery_item_id, colonist_id, _carried_item, current_cell)
+		var result: Dictionary = world_state.request_deliver_construction_material(_construction_delivery_item_id, colonist_id, _carried_item, current_cell, current_world_space_id)
 		_finish_construction_delivery_job("construction_material_delivered" if bool(result.get("ok", false)) else "delivery_%s" % String(result.get("reason", "failed")), bool(result.get("ok", false)))
 
 func _process_harvesting(delta: float) -> void:
@@ -1128,6 +1370,22 @@ func _process_harvesting(delta: float) -> void:
 		return
 	var result: Dictionary = world_state.request_complete_harvest_order(_harvest_order_id, colonist_id)
 	_finish_harvest_job("harvest_completed" if bool(result.get("ok", false)) else "harvest_%s" % String(result.get("reason", "failed")))
+
+func _process_mining(delta: float) -> void:
+	if world_state == null or _mining_order_id.is_empty():
+		_finish_mining_job("missing_mining_context")
+		return
+	if world_state.get_mining_order_reservation(_mining_order_id) != colonist_id:
+		_finish_mining_job("reservation_lost")
+		return
+	if abs(current_cell.x - _mining_target_cell.x) + abs(current_cell.y - _mining_target_cell.y) != 1:
+		_finish_mining_job("not_adjacent_to_mine_target")
+		return
+	_mining_work_elapsed += delta
+	if _mining_work_elapsed < mining_work_duration:
+		return
+	var result: Dictionary = world_state.request_complete_mining_order(_mining_order_id, colonist_id, current_cell, current_world_space_id)
+	_finish_mining_job("mining_completed" if bool(result.get("ok", false)) else "mining_%s" % String(result.get("reason", "failed")))
 
 func _process_hauling() -> void:
 	if world_state == null or _haul_item_id.is_empty():
@@ -1146,17 +1404,17 @@ func _process_hauling() -> void:
 		_activity = Activity.MOVING_TO_STOCKPILE
 		return
 	if _activity == Activity.DEPOSITING:
-		var result: Dictionary = world_state.request_deposit_carried_item(colonist_id, _carried_item, _haul_destination_cell)
+		var result: Dictionary = world_state.request_deposit_carried_item(colonist_id, _carried_item, _haul_destination_cell, current_world_space_id)
 		_finish_haul_job("haul_deposited" if bool(result.get("ok", false)) else "deposit_%s" % String(result.get("reason", "failed")), bool(result.get("ok", false)))
 
 func _pick_new_wander_target() -> void:
 	# Loaded-cell pathing cannot produce a valid destination after streaming has
 	# unloaded this colonist's current cell. Remain idle until it is relevant again.
-	if not chunk_manager.is_cell_loaded(current_cell):
+	if not chunk_manager.is_cell_loaded(current_cell, current_world_space_id):
 		_enter_idle()
 		return
 	for _attempt in range(12):
-		var candidate: Vector2i = chunk_manager.get_random_walkable_cell_near(current_cell, wander_radius, 48)
+		var candidate: Vector2i = chunk_manager.get_random_walkable_cell_near(current_cell, wander_radius, 48, true, current_world_space_id)
 		var path_result: Dictionary = _query_path(candidate)
 		if not bool(path_result.get("reachable", false)):
 			continue
@@ -1192,12 +1450,22 @@ func _finish_harvest_job(reason: String = "harvest_abandoned") -> void:
 	_job_evaluation_cooldown_remaining = 0.0
 	_enter_idle()
 
+func _finish_mining_job(reason: String = "mining_abandoned") -> void:
+	if world_state != null and not _mining_order_id.is_empty():
+		world_state.release_mining_order(_mining_order_id, colonist_id, reason)
+	_mining_order_id = ""
+	_mining_target_cell = Vector2i.ZERO
+	_mining_travel_elapsed = 0.0
+	_mining_work_elapsed = 0.0
+	_job_evaluation_cooldown_remaining = 0.0
+	_enter_idle()
+
 func _finish_haul_job(reason: String = "haul_abandoned", deposited: bool = false) -> void:
 	if world_state != null and not _haul_item_id.is_empty() and not deposited:
 		if _carried_item.is_empty():
 			world_state.release_haul_item(_haul_item_id, colonist_id, reason)
 		else:
-			var drop_result: Dictionary = world_state.request_drop_carried_item(_haul_item_id, colonist_id, current_cell, reason)
+			var drop_result: Dictionary = world_state.request_drop_carried_item(_haul_item_id, colonist_id, current_cell, reason, current_world_space_id)
 			if not bool(drop_result.get("ok", false)):
 				world_state.release_haul_item(_haul_item_id, colonist_id, reason)
 	_haul_item_id = ""
@@ -1216,8 +1484,12 @@ func _abandon_current_activity_for_manual_move() -> void:
 			_finish_construction_job("manual_move_requested")
 		Activity.MOVING_TO_HARVEST, Activity.HARVESTING:
 			_finish_harvest_job("manual_move_requested")
+		Activity.MOVING_TO_MINE, Activity.MINING:
+			_finish_mining_job("manual_move_requested")
 		Activity.MOVING_TO_HAUL_ITEM, Activity.CARRYING_ITEM, Activity.MOVING_TO_STOCKPILE, Activity.DEPOSITING:
 			_finish_haul_job("manual_move_requested")
+		Activity.MOVING_TO_WORLD_SPACE_CONNECTION, Activity.USING_WORLD_SPACE_CONNECTION:
+			_finish_world_space_connection_use("manual_move_requested")
 		_:
 			_enter_idle()
 
@@ -1238,9 +1510,28 @@ func _build_manual_move_result(ok: bool, reason: String, destination_cell: Vecto
 		"command": "move" if ok else get_player_command_name(),
 	}
 
+func _build_world_space_connection_result(ok: bool, reason: String, connection_id: String, source_world_space_id: String, source_cell: Vector2i, destination_world_space_id: String, destination_cell: Vector2i) -> Dictionary:
+	return {
+		"ok": ok,
+		"reason": reason,
+		"connection_id": connection_id,
+		"source_world_space_id": source_world_space_id,
+		"source_cell": source_cell,
+		"destination_world_space_id": destination_world_space_id,
+		"destination_cell": destination_cell,
+	}
+
+func _get_connection_endpoint_cell(connection: Dictionary, world_space_id: String) -> Vector2i:
+	if String(connection.get("from_world_space_id", "")) == world_space_id:
+		return connection.get("from_cell", Vector2i.ZERO)
+	if bool(connection.get("bidirectional", false)) and String(connection.get("to_world_space_id", "")) == world_space_id:
+		return connection.get("to_cell", Vector2i.ZERO)
+	return Vector2i(2147483647, 2147483647)
+
 func _enter_idle() -> void:
 	_clear_player_command()
 	_clear_path()
+	_world_space_connection_id = ""
 	target_cell = current_cell
 	_target_position = global_position
 	_activity = Activity.IDLE

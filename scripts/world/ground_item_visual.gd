@@ -8,16 +8,36 @@ class_name GroundItemVisual
 var _resource_type: String = ""
 var _amount: int = 0
 var _label: Label
+var _show_amount_label := false
 
-func configure(resource_type: String, amount: int) -> void:
+
+func configure(resource_type: String, amount: int, show_amount_label: bool = false) -> void:
 	_resource_type = resource_type
 	_amount = amount
-	_ensure_label()
-	_label.text = "%s x%d" % [_get_display_name(), _amount]
+	_show_amount_label = show_amount_label
+	_refresh_amount_label()
 	queue_redraw()
 
-func _ready() -> void:
+
+func set_amount_label_visible(enabled: bool) -> void:
+	if _show_amount_label == enabled:
+		return
+	_show_amount_label = enabled
+	_refresh_amount_label()
+
+
+func is_amount_label_visible() -> bool:
+	return _label != null and _label.visible
+
+
+func _refresh_amount_label() -> void:
+	if not _show_amount_label:
+		if _label != null:
+			_label.visible = false
+		return
 	_ensure_label()
+	_label.visible = true
+	_label.text = "%s x%d" % [_get_display_name(), _amount]
 
 func _ensure_label() -> void:
 	if _label != null:

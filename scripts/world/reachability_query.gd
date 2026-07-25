@@ -3,7 +3,7 @@ class_name ReachabilityQuery
 
 ## Purpose: Answer bounded reachability questions inside one currently loaded WorldSpace.
 ## Responsibility: Build transient orthogonal cell paths from ChunkManager/WorldState read APIs without owning game state.
-## Assumptions: Phase 1 supports only the surface WorldSpace and has no diagonal movement, path cache, asynchronous search, or traversal outside loaded chunks.
+## Assumptions: Queries remain local to the one active supported WorldSpace and have no diagonal movement, path cache, asynchronous search, or traversal outside loaded chunks.
 
 const DEFAULT_MAX_VISITED_CELLS := 4096
 const ORTHOGONAL_NEIGHBOURS: Array[Vector2i] = [
@@ -71,7 +71,7 @@ static func is_cell_traversable(chunk_manager: ChunkManager, world_state: Node, 
 		return false
 
 	var is_target: bool = cell == target_cell
-	var construction: Dictionary = world_state.get_construction_site_at_cell(cell)
+	var construction: Dictionary = world_state.get_construction_site_at_cell(cell, world_space_id)
 	if not construction.is_empty() and not (is_target and bool(options.get("allow_target_construction", false))):
 		return false
 	if chunk_manager.is_cell_blocked_by_resource(cell, world_space_id) and not (is_target and bool(options.get("allow_target_resource", false))):
